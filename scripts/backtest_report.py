@@ -1,0 +1,57 @@
+"""CLI로 관심 종목들의 백테스트 요약(매매 횟수/주기 포함)을 출력한다.
+
+사용법: python scripts/backtest_report.py [years]
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from data.fetch import WATCHLIST, fetch_ohlcv
+from signals.indicators import build_signals
+from backtest.engine import run_backtest, buy_and_hold_return_pct
+
+
+def main() -> None:
+    years = int(sys.argv[1]) if len(sys.argv) > 1 else 3
+
+    print(f"=== 최근 {years}년 백테스트 요약 ===\n")
+    for name, code in WATCHLIST.items():
+        try:
+            df = fetch_ohlcv(code, years=years)
+        except Exception as e:  # noqa: BLE001
+            print(f"[{name}] 데이터 조회 실패: {e}\n")
+            continue
+
+        df_sig = build_signals(df)
+        # 지표 워밍업 구간(초반 60일) 이후만 사용, 그리고 요청한 기간만큼만 자르기
+        df_sig = df_sig.dropna(subset=["MA_LONG"])
+        cutoff = df_sig.index.max() - pd.Timedelta(days=int(years * 365.25))
+        df_period = df_sig[df_sig.index >= cutoff]
+
+        result = run_backtest(df_period)
+        bh_return = buy_and_hold_return_pct(df_period)
+
+        print(f"[{name} ({code})]")
+        print(f"  기간           : {df_period.index.min().date()} ~ {df_period.index.max().date()}")
+        print(f"  전략 누적수익률 : {result.total_return_pct:+.1%}")
+        print(f"  단순보유 수익률 : {bh_return:+.1%}")
+        print(f"  최대낙폭(MDD)  : {result.mdd_pct:.1%}")
+        print(f"  총 매매 횟수    : {result.num_trades}회")
+        if result.avg_holding_days is not None:
+            print(f"  평균 보유일수   : {result.avg_holding_days:.0f}일")
+        if result.num_trades > 0:
+            total_days = (df_period.index.max() - df_period.index.min()).days
+            avg_gap = total_days / result.num_trades
+            print(f"  평균 매매 주기  : 약 {avg_gap:.0f}일에 1회 (매수+매도 한 쌍 기준)")
+        if result.win_rate_pct is not None:
+            print(f"  승률           : {result.win_rate_pct:.0%}")
+        print()
+
+
+if __name__ == "__main__":
+    main()

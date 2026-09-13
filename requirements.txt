@@ -1,0 +1,7 @@
+streamlit>=1.38
+pandas>=2.2
+numpy>=1.26
+plotly>=5.24
+finance-datareader>=0.9.90
+ta>=0.11.0
+openpyxl>=3.1  # 스캔 결과 엑셀(.xlsx) 내보내기용
