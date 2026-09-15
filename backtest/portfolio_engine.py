@@ -14,10 +14,21 @@
 리밸런싱까지 재진입하지 않는다(현금 보유) — 잦은 재진입으로 회전율이 튀는
 것을 막기 위함(PROMPT_V2.md A1).
 
-단순화(문서에 명시된 한계): 순위가 상위 K 밖으로 밀려난 종목을 "컷오프 밖으로
-완전히 밀려날 때까지는 계속 보유"하는 이력(hysteresis) 없이, 매 리밸런싱마다
-그냥 새로 상위 K를 다시 뽑는다 — 상위 K에서 빠지면 곧바로 매도 대상이다.
-회전율을 줄이는 완충장치는 Phase B로 미룬다.
+2026-09-16 추가 (회전율/비용 민감도 + 박스권 대응, PROMPT_V2.md Phase B 일부):
+- **순위 이력(hysteresis)**: 처음엔 "상위 K에서 한 칸이라도 빠지면 곧바로
+  매도"였는데, 이러면 순위가 엎치락뒤치락하는 것만으로도 불필요한 매매가
+  계속 발생한다. 이제는 이미 보유 중인 종목은 순위가 RANK_CUTOFF(상위 K의
+  2배) 밖으로 완전히 밀려나야 매도 대상이 되고, 빈 자리만 새 상위권 종목으로
+  채운다.
+- **소액 리밸런싱 생략**: 목표 비중과 현재 비중의 차이가 포트폴리오 가치의
+  MIN_TRADE_THRESHOLD보다 작으면(이미 보유 중인 종목의 미세 조정에 한함 —
+  신규 진입/완전 청산은 항상 실행됨) 거래를 생략한다. 매번 소수점 단위까지
+  정확히 맞추려다 자잘한 거래비용만 쌓이는 걸 막기 위함.
+- **추세강도(ADX) 기반 노출 축소**: 기존 장세 필터(A5)는 지수가 200일선
+  위/아래인지만 본다. 그런데 2016-2019 같은 박스권은 지수가 200일선 근처를
+  오르내리기만 할 뿐 "위/아래"가 자주 뒤집혀서 이 필터만으로는 못 걸러진다.
+  Wilder의 ADX(추세 강도, 방향과 무관)가 20 미만(그가 제시한 "무추세" 경험적
+  기준 — 데이터에 맞춰 고른 값이 아님)이면 노출 비중에 추가로 0.5배를 곱한다.
 """
 from __future__ import annotations
 
@@ -26,8 +37,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from signals.indicators import compute_atr
-from strategy.momentum import rank_universe, select_top_k
+from signals.indicators import ADX_NO_TREND_THRESHOLD, compute_adx, compute_atr
+from strategy.momentum import rank_universe
 
 # 매수/매도 각각에 절반씩 적용 — 왕복 기준 backtest/engine.py의
 # ROUND_TRIP_COST(0.3%)와 같은 가정. run_portfolio_backtest()의
@@ -35,6 +46,12 @@ from strategy.momentum import rank_universe, select_top_k
 ROUND_TRIP_COST = 0.003
 
 TOP_K = 15
+# 이미 보유 중인 종목은 순위가 이 밖으로 밀려나야 매도 대상이 된다(상위 K의
+# 2배 — 흔히 쓰는 "목표치의 2배" 버퍼 관행. 데이터에 맞춰 고른 값이 아님).
+RANK_CUTOFF = TOP_K * 2
+# 포트폴리오 가치 대비 이보다 작은 리밸런싱 조정은 생략한다(기존 보유 종목의
+# 비중 미세조정에 한함 — 신규 진입/완전 청산에는 적용 안 됨).
+MIN_TRADE_THRESHOLD = 0.015
 MAX_WEIGHT_PER_STOCK = 0.12
 ATR_PERIOD = 14
 ATR_INITIAL_MULT = 2.5
@@ -42,6 +59,7 @@ ATR_TRAIL_MULT = 3.5
 VOL_LOOKBACK_DAYS = 60
 REGIME_MA_PERIOD = 200
 REGIME_SLOPE_LOOKBACK = 20
+ADX_DAMPEN_MULT = 0.5  # ADX가 무추세를 가리킬 때 노출 비중에 추가로 곱하는 배율
 TRADING_DAYS_PER_YEAR = 252
 
 
@@ -127,6 +145,38 @@ def _regime_multiplier(index_df_upto: pd.DataFrame) -> float:
     if above:
         return 1.00 if slope_positive else 0.75
     return 0.40 if slope_positive else 0.20
+
+
+def _trend_multiplier(index_df_upto: pd.DataFrame) -> float:
+    """ADX가 "뚜렷한 추세가 없다"고 말하면 노출을 추가로 줄인다(2026-09-16
+    추가). _regime_multiplier()는 가격이 200일선 위/아래인지만 보는데, 박스권
+    에서는 그 위/아래가 자주 뒤집혀서 이 필터만으로는 놓치는 경우가 있다."""
+    adx = compute_adx(index_df_upto).dropna()
+    if adx.empty:
+        return 1.0
+    return ADX_DAMPEN_MULT if adx.iloc[-1] < ADX_NO_TREND_THRESHOLD else 1.0
+
+
+def _select_with_hysteresis(
+    ranked: pd.DataFrame, top_k: int, rank_cutoff: int, currently_held: set[str],
+) -> list[str]:
+    """순위 이력(hysteresis)을 반영해서 이번 리밸런싱의 목표 종목 목록을 정한다.
+
+    이미 보유 중인 종목은 순위가 rank_cutoff 밖으로 밀려나야 제외 대상이 되고,
+    그렇게 비는 자리만 아직 안 담은 종목 중 순위가 가장 높은 것으로 채운다.
+    매 리밸런싱마다 처음부터 다시 뽑으면(순위가 K 언저리에서 계속 엎치락뒤치락
+    하는 종목마다) 불필요한 매매가 반복되는 걸 줄이기 위함이다.
+    """
+    if ranked.empty:
+        return []
+    codes_in_order = ranked["코드"].tolist()
+    rank_of = {c: i for i, c in enumerate(codes_in_order)}
+
+    kept = [c for c in codes_in_order if c in currently_held and rank_of[c] < rank_cutoff]
+    kept = kept[:top_k]  # codes_in_order 순서로 이미 순위 정렬돼 있음
+    remaining = top_k - len(kept)
+    new_picks = [c for c in codes_in_order if c not in kept][:max(remaining, 0)]
+    return kept + new_picks
 
 
 def _inverse_vol_weights(
@@ -298,6 +348,12 @@ def run_portfolio_backtest(
                 current_value = current_shares * op
                 delta = target_value - current_value
 
+                # 이미 보유 중인 종목의 사소한 비중 미세조정은 생략한다(신규
+                # 진입은 current_shares가 0이라 delta가 목표 비중 전체와 같으므로
+                # 이 문턱에 걸리지 않는다 — 보통 top_k분의 1이 이 문턱보다 훨씬 큼).
+                if current_shares > 0 and abs(delta) < portfolio_value * MIN_TRADE_THRESHOLD:
+                    continue
+
                 if delta > 0:  # 매수(신규 진입 포함)
                     spend = min(delta, cash)
                     if spend <= 0:
@@ -367,10 +423,10 @@ def run_portfolio_backtest(
         # 5) 오늘이 월말이면, 오늘 종가까지의 정보로 다음 리밸런싱 목표를 정함
         if date in rebalance_dates:
             ranked = rank_universe(price_data, date)
-            top_codes = select_top_k(ranked, top_k)
-            weights = _inverse_vol_weights(top_codes, price_data, date)
+            target_codes = _select_with_hysteresis(ranked, top_k, RANK_CUTOFF, set(holdings.keys()))
+            weights = _inverse_vol_weights(target_codes, price_data, date)
             regime_mult = {
-                market: _regime_multiplier(df[df.index <= date])
+                market: _regime_multiplier(df[df.index <= date]) * _trend_multiplier(df[df.index <= date])
                 for market, df in index_data.items()
             }
             pending_targets = {

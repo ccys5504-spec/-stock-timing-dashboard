@@ -71,6 +71,50 @@ def compute_atr(df: pd.DataFrame, period: int = ATR_PERIOD) -> pd.Series:
     return tr.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
 
 
+ADX_PERIOD = 14
+# Wilder(ADX 창시자) 본인이 제안한 경험적 기준값 — 데이터에 맞춰 고른 게
+# 아니라 업계에서 널리 쓰이는 표준 해석이다. ADX < 20이면 "뚜렷한 추세가
+# 없는 상태(박스권 등)", ADX > 25면 "추세가 뚜렷한 상태"로 본다.
+ADX_NO_TREND_THRESHOLD = 20
+
+
+def compute_adx(df: pd.DataFrame, period: int = ADX_PERIOD) -> pd.Series:
+    """ADX(Average Directional Index) — 방향과 무관하게 "추세가 있는지 없는지"
+    강도만 나타내는 지표(0~100, 높을수록 뚜렷한 추세).
+
+    v2 포트폴리오 전략(backtest/portfolio_engine.py)이 박스권(방향성 없는
+    구간)에서 성과가 나빴던 문제(잦은 ATR 손절 휩쏘)를 완화하기 위해 도입했다
+    — 지수 자체가 "추세가 없다"고 말하는 시기엔 노출 비중을 더 줄인다.
+    가격 위/아래(200일선 여부)만 보는 기존 장세 필터와 달리, ADX는 "그 안에서
+    방향성 있게 움직이는지"를 따로 잡아낸다 — 200일선 근처에서 오르내리기만
+    반복하는 진짜 박스권은 ADX가 낮게 나온다.
+    """
+    high = df["High"]
+    low = df["Low"]
+    prev_high = high.shift(1)
+    prev_low = low.shift(1)
+
+    up_move = high - prev_high
+    down_move = prev_low - low
+    plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+
+    tr = pd.concat([
+        high - low,
+        (high - df["Close"].shift(1)).abs(),
+        (low - df["Close"].shift(1)).abs(),
+    ], axis=1).max(axis=1)
+
+    smooth = lambda s: s.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    atr = smooth(tr)
+    plus_di = 100 * smooth(plus_dm) / atr.replace(0, np.nan)
+    minus_di = 100 * smooth(minus_dm) / atr.replace(0, np.nan)
+
+    di_sum = (plus_di + minus_di).replace(0, np.nan)
+    dx = 100 * (plus_di - minus_di).abs() / di_sum
+    return smooth(dx).fillna(0)
+
+
 def _rsi(close: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
     delta = close.diff()
     gain = delta.clip(lower=0)
