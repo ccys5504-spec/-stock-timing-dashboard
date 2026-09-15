@@ -46,6 +46,31 @@ VOLUME_MULTIPLIER = 1.2
 REGIME_MA_PERIOD = 200
 
 
+ATR_PERIOD = 14
+
+
+def compute_atr(df: pd.DataFrame, period: int = ATR_PERIOD) -> pd.Series:
+    """ATR(Average True Range) — 변동성 크기를 가격 단위(원)로 나타낸 지표.
+
+    v2 포트폴리오 전략(backtest/portfolio_engine.py)의 손절/트레일링 스탑
+    기준선 계산에 쓰인다(PROMPT_V2.md Phase A3). True Range는 아래 셋 중
+    최댓값이다 — 당일 고가-저가뿐 아니라 전일 종가 대비 갭까지 반영한다:
+      - 당일 고가 - 당일 저가
+      - |당일 고가 - 전일 종가|
+      - |당일 저가 - 전일 종가|
+    ATR은 True Range의 지수이동평균(Wilder 방식, alpha=1/period)이다.
+    """
+    high = df["High"]
+    low = df["Low"]
+    prev_close = df["Close"].shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+
+
 def _rsi(close: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
     delta = close.diff()
     gain = delta.clip(lower=0)
