@@ -54,6 +54,11 @@ def _rsi(close: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
+    # avg_loss=0인데 avg_gain>0이면(구간 내내 상승만) RSI는 정의상 100이어야
+    # 한다. 위 나눗셈은 이 경우 avg_loss를 NaN으로 바꿔 RSI도 NaN이 되므로
+    # 명시적으로 100을 채운다. avg_gain도 0(가격 변화 자체가 없음)인 경우만
+    # 진짜 미정의 상태로 보고 중립값 50을 채운다.
+    rsi = rsi.mask((avg_loss == 0) & (avg_gain > 0), 100.0)
     return rsi.fillna(50)
 
 

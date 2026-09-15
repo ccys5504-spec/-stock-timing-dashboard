@@ -7,9 +7,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pandas as pd
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import _pyarrow_compat  # noqa: F401,E402  # pandas보다 반드시 먼저 임포트
+
+import pandas as pd  # noqa: E402
 
 from data.fetch import WATCHLIST, fetch_ohlcv
 from signals.indicators import build_signals
@@ -50,6 +52,12 @@ def main() -> None:
             print(f"  평균 매매 주기  : 약 {avg_gap:.0f}일에 1회 (매수+매도 한 쌍 기준)")
         if result.win_rate_pct is not None:
             print(f"  승률           : {result.win_rate_pct:.0%}")
+        if result.sharpe_ratio is not None:
+            print(f"  샤프 비율       : {result.sharpe_ratio:.2f}")
+        if result.sortino_ratio is not None:
+            print(f"  소르티노 비율   : {result.sortino_ratio:.2f}")
+        if result.exposure_pct is not None:
+            print(f"  시장 노출도     : {result.exposure_pct:.0%}")
         print()
 
 

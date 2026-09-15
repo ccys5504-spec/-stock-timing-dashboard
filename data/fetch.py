@@ -4,6 +4,8 @@ from __future__ import annotations
 import datetime as dt
 import functools
 import json
+import os
+import tempfile
 from pathlib import Path
 
 import FinanceDataReader as fdr
@@ -11,6 +13,32 @@ import pandas as pd
 
 _WATCHLIST_PATH = Path(__file__).parent / "watchlist.json"
 _HOLDINGS_PATH = Path(__file__).parent / "holdings.json"
+
+
+def _atomic_write_json(path: Path, data) -> None:
+    """파일이 깨지지 않도록 안전하게 JSON을 저장한다.
+
+    이전에는 open(path, "w")로 바로 덮어썼는데, 그 방식은 (1) 저장 도중
+    프로그램이 죽거나 (2) 브라우저 탭 두 개에서 거의 동시에 저장 버튼을
+    누르는 경우, 파일이 절반만 써진 채로 남거나 서로 다른 내용이 뒤섞일 수
+    있다. 대신 같은 폴더에 임시 파일로 전체 내용을 먼저 다 쓰고, 그 다음
+    os.replace()로 한 번에 교체한다 — os.replace는 운영체제 수준에서
+    "원자적"이라서, 중간에 어떤 일이 생겨도 원본 파일은 '이전 내용 그대로'
+    이거나 '새 내용으로 완전히 바뀐 상태' 둘 중 하나만 존재하고 깨진 상태로
+    남지 않는다.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 _DEFAULT_WATCHLIST: dict[str, str] = {
     "SK하이닉스": "000660",
@@ -33,8 +61,7 @@ def load_watchlist() -> dict[str, str]:
 
 def save_watchlist(watchlist: dict[str, str]) -> None:
     """관심 종목을 data/watchlist.json에 저장한다."""
-    with open(_WATCHLIST_PATH, "w", encoding="utf-8") as f:
-        json.dump(watchlist, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(_WATCHLIST_PATH, watchlist)
 
 
 # 관심 종목 (종목명 -> 종목코드). 앱에서 교체하면 data/watchlist.json에 저장되고,
@@ -57,8 +84,7 @@ def load_holdings() -> list[dict]:
 
 def save_holdings(holdings: list[dict]) -> None:
     """내 보유종목 목록을 data/holdings.json에 저장한다."""
-    with open(_HOLDINGS_PATH, "w", encoding="utf-8") as f:
-        json.dump(holdings, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(_HOLDINGS_PATH, holdings)
 
 
 @functools.lru_cache(maxsize=1)
@@ -83,11 +109,18 @@ def fetch_ohlcv(code: str, years: int = 3) -> pd.DataFrame:
     """종목코드로 최근 N년치 일봉 OHLCV 데이터를 가져온다.
 
     Returns columns: Open, High, Low, Close, Volume (index: 날짜)
+
+    2026-09-15 수정: 예전에는 여기서 300일치 워밍업을 직접 더한 start를 만든
+    뒤 fetch_ohlcv_range()에 넘겼는데, 그 함수가 내부적으로 또 warmup_days
+    (기본 300일)를 더하고 있어서 실제로는 워밍업이 600일(약 300+300)로
+    이중으로 붙고 있었다. 결과가 틀리지는 않지만(워밍업은 많을수록 안전한
+    방향) 필요 이상으로 더 오래된 데이터까지 매번 불필요하게 내려받아서
+    조회가 느려지고, 코드만 봐서는 "왜 300일이 아니라 600일이지?"가 헷갈렸다.
+    이제 여기서는 순수하게 "표시하고 싶은 기간"의 시작일만 계산하고, 워밍업은
+    fetch_ohlcv_range()에게 한 번만 맡긴다.
     """
     end = dt.date.today()
-    # 지표 계산 여유분: 상승장/하락장 자동판별용 200일 이동평균이 첫날부터
-    # 유효하려면 최소 200 거래일(약 290 달력일) 이상의 워밍업이 필요하다.
-    start = end - dt.timedelta(days=int(years * 365.25) + 300)
+    start = end - dt.timedelta(days=int(years * 365.25))
     return fetch_ohlcv_range(code, start.isoformat(), end.isoformat())
 
 

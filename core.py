@@ -1,0 +1,92 @@
+"""app.py의 여러 뷰(탭)가 공통으로 쓰는 설정값/헬퍼 함수 모음.
+
+2026-09-15 정리: 예전에는 app.py 하나에 탭 5개 내용이 전부 들어있어서
+800줄 가까이 됐다. 탭별 화면은 views/ 아래로 나누고, 그 탭들이 다 같이
+쓰는 "데이터 불러오기+가공", "사이드바 설정값 묶음" 같은 부분만 여기 남겼다.
+"""
+from __future__ import annotations
+
+import io
+from dataclasses import dataclass
+
+import pandas as pd
+import streamlit as st
+
+from data.fetch import fetch_ohlcv, get_universe
+from screener.scan import scan_signals
+from signals import indicators as ind
+
+PERIOD_OPTIONS = {"1년": 1, "3년": 3, "5년": 5}
+VIEWS = ["🔍 단일 종목 분석", "📊 3종목 비교", "🧭 종목 추천(스크리너)", "💼 내 보유종목", "📋 운영 노트"]
+CHART_TIMEFRAMES = {"일봉": None, "주봉": "W", "월봉": "ME", "년봉": "YE"}
+
+
+@dataclass
+class Settings:
+    """사이드바에서 사용자가 고른 설정값 묶음. 각 뷰 함수에 그대로 넘겨준다."""
+
+    threshold: int
+    volume_filter_mode: bool | str
+    volume_multiplier: float
+    stop_loss_pct: float | None
+    trailing_stop_pct: float | None
+    exit_on_signal: bool
+    adaptive_exit: bool
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_data(code: str, years: int) -> pd.DataFrame:
+    return fetch_ohlcv(code, years=years)
+
+
+def prepare(code: str, years: int, settings: Settings) -> pd.DataFrame | None:
+    """데이터 로드 + 지표/신호 계산 + 기간 컷까지 한 번에."""
+    try:
+        raw = load_data(code, years)
+    except Exception:  # noqa: BLE001
+        return None
+    df = ind.build_signals(
+        raw,
+        buy_threshold=settings.threshold,
+        sell_threshold=-settings.threshold,
+        volume_filter=settings.volume_filter_mode,
+        volume_multiplier=settings.volume_multiplier,
+    )
+    df = df.dropna(subset=["MA_LONG"])
+    cutoff = df.index.max() - pd.Timedelta(days=int(years * 365.25))
+    df = df[df.index >= cutoff]
+    return df if not df.empty else None
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def run_screener(markets, top_n, threshold_, vfilter, vmult):
+    universe = get_universe(markets=tuple(markets), top_n=top_n)
+    return scan_signals(
+        universe, years=1,
+        buy_threshold=threshold_, sell_threshold=-threshold_,
+        volume_filter=vfilter, volume_multiplier=vmult,
+    )
+
+
+def resample_for_chart(df: pd.DataFrame, rule: str | None) -> pd.DataFrame:
+    """일봉 df를 주봉/월봉/년봉으로 리샘플링하고, 그 기준으로 지표를 다시 계산한다
+    (차트 표시 전용 — 매매 신호/백테스트는 항상 일봉 기준 그대로 유지된다).
+    """
+    if rule is None:
+        return df
+    agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
+    if "Volume" in df.columns:
+        agg["Volume"] = "sum"
+    resampled = df[list(agg.keys())].resample(rule).agg(agg).dropna(subset=["Close"])
+    return ind.add_indicators(resampled)
+
+
+def to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8-sig")  # BOM 포함 -> 엑셀에서 한글 깨짐 방지
+
+
+def to_excel_bytes(df: pd.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="스캔결과")
+    return buf.getvalue()

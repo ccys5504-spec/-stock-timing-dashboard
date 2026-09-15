@@ -22,9 +22,11 @@ import itertools
 import sys
 from pathlib import Path
 
-import pandas as pd
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import _pyarrow_compat  # noqa: F401,E402  # pandas보다 반드시 먼저 임포트
+
+import pandas as pd  # noqa: E402
 
 from data.fetch import WATCHLIST, fetch_ohlcv, fetch_ohlcv_range
 from signals.indicators import add_indicators, add_scores
