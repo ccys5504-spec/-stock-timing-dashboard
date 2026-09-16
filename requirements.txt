@@ -5,6 +5,7 @@ plotly>=5.24
 finance-datareader>=0.9.90
 ta>=0.11.0
 openpyxl>=3.1  # 스캔 결과 엑셀(.xlsx) 내보내기용
+requests>=2.31  # 관심종목/보유종목을 GitHub Gist에 저장할 때 사용 (data/fetch.py)
 pyarrow>=14  # Streamlit이 데이터프레임 표시에 필요. 이 컴퓨터는 Windows 앱 제어
              # 정책이 pyarrow의 네이티브 계산 모듈(.compute)만 차단하는데,
              # pandas가 그걸 무조건 import하려 들어서 `import pandas`가 실패한다.

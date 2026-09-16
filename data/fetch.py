@@ -6,13 +6,95 @@ import functools
 import json
 import os
 import tempfile
+import time
+import tomllib
 from pathlib import Path
 
 import FinanceDataReader as fdr
 import pandas as pd
+import requests
 
 _WATCHLIST_PATH = Path(__file__).parent / "watchlist.json"
 _HOLDINGS_PATH = Path(__file__).parent / "holdings.json"
+
+# ---- 관심종목/보유종목 저장 위치 ----
+# 2026-09-16: Streamlit Cloud는 코드가 재배포될 때마다(새 push든 수동
+# Reboot든) 컨테이너를 완전히 새로 만든다. data/*.json은 개인정보라 git에
+# 올리지 않는데(.gitignore), 바로 그 이유 때문에 재배포마다 Cloud에서
+# 직접 입력한 보유종목/관심종목이 통째로 사라지는 사고가 있었다.
+#
+# 그래서 GitHub Gist(비공개)에 저장해서 재배포와 무관하게 남도록 바꿨다.
+# `.streamlit/secrets.toml`에 GITHUB_TOKEN/GIST_ID가 설정돼 있으면 그
+# Gist를 읽고 쓰며, 없으면(로컬 개발 등) 예전처럼 로컬 JSON 파일로
+# 동작한다 — 둘 다 안 되면 앱이 아예 안 켜지는 일은 없도록 항상 로컬
+# 파일을 최종 대비책으로 둔다.
+_SECRETS_PATH = Path(__file__).parent.parent / ".streamlit" / "secrets.toml"
+_GIST_API_TIMEOUT = 10
+_GIST_CACHE_TTL = 10  # 초 — 매 rerun마다 Gist API를 부르지 않도록 짧게 캐싱
+
+
+@functools.lru_cache(maxsize=1)
+def _load_secrets() -> dict:
+    if not _SECRETS_PATH.exists():
+        return {}
+    try:
+        with open(_SECRETS_PATH, "rb") as f:
+            return tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _gist_config() -> tuple[str, str] | None:
+    secrets = _load_secrets()
+    token = secrets.get("GITHUB_TOKEN")
+    gist_id = secrets.get("GIST_ID")
+    if token and gist_id:
+        return token, gist_id
+    return None
+
+
+def _gist_headers(token: str) -> dict:
+    return {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+
+
+def _gist_read_file(filename: str) -> str | None:
+    """Gist가 설정돼 있으면 그 안의 filename 내용을 문자열로 반환한다.
+    설정이 없거나 그 파일이 아직 없거나 API 호출이 실패하면 None —
+    호출부에서 로컬 파일로 대체(fallback)한다."""
+    config = _gist_config()
+    if config is None:
+        return None
+    token, gist_id = config
+    try:
+        resp = requests.get(
+            f"https://api.github.com/gists/{gist_id}",
+            headers=_gist_headers(token), timeout=_GIST_API_TIMEOUT,
+        )
+        resp.raise_for_status()
+        files = resp.json().get("files", {})
+    except Exception:  # noqa: BLE001
+        return None
+    file_info = files.get(filename)
+    return file_info["content"] if file_info else None
+
+
+def _gist_write_file(filename: str, content: str) -> bool:
+    """Gist가 설정돼 있으면 그 안의 filename을 갱신한다. 성공하면 True."""
+    config = _gist_config()
+    if config is None:
+        return False
+    token, gist_id = config
+    try:
+        resp = requests.patch(
+            f"https://api.github.com/gists/{gist_id}",
+            headers=_gist_headers(token),
+            json={"files": {filename: {"content": content}}},
+            timeout=_GIST_API_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _atomic_write_json(path: Path, data) -> None:
@@ -46,45 +128,85 @@ _DEFAULT_WATCHLIST: dict[str, str] = {
     "주성엔지니어링": "036930",
 }
 
+_watchlist_cache: dict[str, str] | None = None
+_watchlist_cache_at: float = 0.0
+_holdings_cache: list[dict] | None = None
+_holdings_cache_at: float = 0.0
+
 
 def load_watchlist() -> dict[str, str]:
-    """관심 종목(종목명 -> 종목코드)을 data/watchlist.json에서 읽어온다.
+    """관심 종목(종목명 -> 종목코드)을 읽어온다.
 
-    파일이 없으면 기본값으로 새로 만든다.
+    Gist가 설정돼 있으면 Gist에서, 아니면 data/watchlist.json에서 읽는다
+    (둘 다 없으면 기본값으로 새로 만든다). 매 Streamlit rerun마다 다시
+    호출되므로, Gist 사용 시 짧게(10초) 캐싱해서 API를 과도하게 부르지
+    않는다 — save_watchlist() 직후에는 캐시를 바로 최신값으로 갱신해서
+    방금 저장한 내용이 곧바로 반영되게 한다.
     """
-    if not _WATCHLIST_PATH.exists():
+    global _watchlist_cache, _watchlist_cache_at
+    now = time.monotonic()
+    if _watchlist_cache is not None and now - _watchlist_cache_at < _GIST_CACHE_TTL:
+        return dict(_watchlist_cache)
+
+    content = _gist_read_file("watchlist.json")
+    if content is not None:
+        result = json.loads(content)
+    elif _WATCHLIST_PATH.exists():
+        with open(_WATCHLIST_PATH, encoding="utf-8") as f:
+            result = json.load(f)
+    else:
         save_watchlist(_DEFAULT_WATCHLIST)
         return dict(_DEFAULT_WATCHLIST)
-    with open(_WATCHLIST_PATH, encoding="utf-8") as f:
-        return json.load(f)
+
+    _watchlist_cache, _watchlist_cache_at = result, now
+    return dict(result)
 
 
 def save_watchlist(watchlist: dict[str, str]) -> None:
-    """관심 종목을 data/watchlist.json에 저장한다."""
-    _atomic_write_json(_WATCHLIST_PATH, watchlist)
+    """관심 종목을 저장한다 (Gist가 설정돼 있으면 Gist에, 아니면 로컬 파일에)."""
+    global _watchlist_cache, _watchlist_cache_at
+    if not _gist_write_file("watchlist.json", json.dumps(watchlist, ensure_ascii=False, indent=2)):
+        _atomic_write_json(_WATCHLIST_PATH, watchlist)
+    _watchlist_cache, _watchlist_cache_at = dict(watchlist), time.monotonic()
 
 
-# 관심 종목 (종목명 -> 종목코드). 앱에서 교체하면 data/watchlist.json에 저장되고,
-# 다음 실행부터 반영된다. 이번 세션 안에서 즉시 반영하려면 load_watchlist()를
-# 다시 호출해야 한다(app.py에서 그렇게 처리함).
+# 관심 종목 (종목명 -> 종목코드). 앱에서 교체하면 저장되고, 다음 실행부터
+# 반영된다. 이번 세션 안에서 즉시 반영하려면 load_watchlist()를 다시
+# 호출해야 한다(app.py에서 그렇게 처리함).
 WATCHLIST: dict[str, str] = load_watchlist()
 
 
 def load_holdings() -> list[dict]:
-    """내 보유종목 목록을 data/holdings.json에서 읽어온다.
+    """내 보유종목 목록을 읽어온다.
 
     각 항목: {"종목코드": str, "수량": float, "매입단가": float}
-    파일이 없으면 빈 목록을 반환한다 (기본으로 보유종목을 가정하지 않음).
+    Gist가 설정돼 있으면 Gist에서, 아니면 data/holdings.json에서 읽는다.
+    둘 다 없으면 빈 목록(기본으로 보유종목을 가정하지 않음).
     """
-    if not _HOLDINGS_PATH.exists():
-        return []
-    with open(_HOLDINGS_PATH, encoding="utf-8") as f:
-        return json.load(f)
+    global _holdings_cache, _holdings_cache_at
+    now = time.monotonic()
+    if _holdings_cache is not None and now - _holdings_cache_at < _GIST_CACHE_TTL:
+        return list(_holdings_cache)
+
+    content = _gist_read_file("holdings.json")
+    if content is not None:
+        result = json.loads(content)
+    elif _HOLDINGS_PATH.exists():
+        with open(_HOLDINGS_PATH, encoding="utf-8") as f:
+            result = json.load(f)
+    else:
+        result = []
+
+    _holdings_cache, _holdings_cache_at = result, now
+    return list(result)
 
 
 def save_holdings(holdings: list[dict]) -> None:
-    """내 보유종목 목록을 data/holdings.json에 저장한다."""
-    _atomic_write_json(_HOLDINGS_PATH, holdings)
+    """내 보유종목 목록을 저장한다 (Gist가 설정돼 있으면 Gist에, 아니면 로컬 파일에)."""
+    global _holdings_cache, _holdings_cache_at
+    if not _gist_write_file("holdings.json", json.dumps(holdings, ensure_ascii=False, indent=2)):
+        _atomic_write_json(_HOLDINGS_PATH, holdings)
+    _holdings_cache, _holdings_cache_at = list(holdings), time.monotonic()
 
 
 @functools.lru_cache(maxsize=1)
