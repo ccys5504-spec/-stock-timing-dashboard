@@ -14,8 +14,10 @@ def render(settings: Settings) -> None:
         "지금 시점 매수/매도 신호를 한 화면에서 확인할 수 있습니다."
     )
     st.info(
-        "ℹ️ 여기 입력한 정보는 이 컴퓨터의 data/holdings.json 파일에만 저장됩니다. "
-        "어디로도 전송되지 않습니다."
+        "ℹ️ 여기 입력한 정보는 비공개 저장소에만 저장됩니다(이 앱을 초대받은 "
+        "사람만 접근 가능한 GitHub 비공개 Gist, 또는 그게 설정 안 된 환경에서는 "
+        "이 컴퓨터의 data/holdings.json 파일). 광고·분석 등 다른 용도로 쓰이지 "
+        "않습니다."
     )
 
     holdings = load_holdings()

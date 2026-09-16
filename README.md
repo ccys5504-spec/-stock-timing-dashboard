@@ -550,10 +550,29 @@ print(result[result['신호'] != '관망'])
 - 사이드바에서 손절을 켜뒀다면, 매입가 대비 손절 기준에 도달한 종목도 별도로
   경고합니다
 
-입력한 정보는 [data/holdings.json](data/holdings.json)에 로컬로만 저장되고
-어디로도 전송되지 않습니다. 증권사 API 연동이나 계좌 자동 조회는 지원하지
-않습니다 — 계좌 정보·API 키는 사용자가 직접 관리해야 하는 영역이라 이 도구는
-"직접 입력" 방식만 제공합니다.
+입력한 정보는 GitHub 비공개 Gist(설정 안 됐으면 로컬 `data/holdings.json`
+파일)에만 저장되고 그 외 어디로도 전송되지 않습니다 — 아래 "데이터 저장
+방식" 절 참고. 증권사 API 연동이나 계좌 자동 조회는 지원하지 않습니다 —
+계좌 정보·API 키는 사용자가 직접 관리해야 하는 영역이라 이 도구는 "직접
+입력" 방식만 제공합니다.
+
+## 데이터 저장 방식 — 재배포에도 살아남는 저장소 (2026-09-16)
+
+Streamlit Cloud는 코드가 재배포될 때마다(새 push든 Manage app의 수동
+Reboot든) 컨테이너를 완전히 새로 만듭니다. `data/holdings.json`/
+`data/watchlist.json`은 개인정보라 git에 올리지 않는데(`.gitignore`),
+바로 그 이유 때문에 예전엔 재배포마다 Cloud에서 직접 입력한 보유종목·
+관심종목이 전부 사라지는 문제가 있었습니다.
+
+지금은 `.streamlit/secrets.toml`에 `GITHUB_TOKEN`(gist 권한만 있는 개인
+토큰)과 `GIST_ID`(비공개 Gist 하나)를 설정해두면, 관심종목/보유종목을
+로컬 파일 대신 그 Gist에서 읽고 씁니다 — 재배포와 무관하게 유지됩니다.
+설정이 없으면(로컬 개발 등) 예전처럼 로컬 JSON 파일로 그대로 동작합니다.
+
+설정 방법은 [.streamlit/secrets.toml.example](.streamlit/secrets.toml.example)
+참고. 로컬에 `.streamlit/secrets.toml`로 복사해서 채운 뒤, Streamlit
+Cloud에도 앱 관리 화면(Manage app) → Settings → Secrets에 같은 두 줄을
+붙여넣어야 Cloud에서도 적용됩니다.
 
 ## 생성되는 파일과 구글드라이브
 
