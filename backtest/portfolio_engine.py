@@ -425,8 +425,18 @@ def run_portfolio_backtest(
             ranked = rank_universe(price_data, date)
             target_codes = _select_with_hysteresis(ranked, top_k, RANK_CUTOFF, set(holdings.keys()))
             weights = _inverse_vol_weights(target_codes, price_data, date)
+            # 2026-09-16: ADX 무추세 필터(_trend_multiplier)를 여기서 뺐다.
+            # 박스권(2016-2019) 방어에는 도움이 됐지만(샤프 0.05→0.42) 그
+            # 대신 추세장에서도 노출을 깎아서 전체 기간 수익률이 288%→192%로
+            # 낮아지고 단순보유보다도 낮아졌다. 사용자에게 "박스권 방어 vs
+            # 전체 수익률" 중 뭘 우선할지 다시 물었더니 이번엔 수익률을
+            # 선택해서, ADX 감쇠는 끄고 지수 200일선 기준 장세 필터만 남긴다.
+            # 순위 이력(hysteresis)/소액 리밸런싱 생략은 회전율만 줄이고
+            # 수익을 깎지 않아서 그대로 유지한다. compute_adx()/
+            # _trend_multiplier() 자체는 지우지 않고 남겨뒀다 — 나중에 다시
+            # 켜고 싶을 수도 있고, 이 결정의 맥락(왜 안 쓰는지)도 남겨야 해서.
             regime_mult = {
-                market: _regime_multiplier(df[df.index <= date]) * _trend_multiplier(df[df.index <= date])
+                market: _regime_multiplier(df[df.index <= date])
                 for market, df in index_data.items()
             }
             pending_targets = {
