@@ -24,11 +24,6 @@ st.set_page_config(page_title="주식 매매 타이밍 분석", layout="wide")
 WATCHLIST = load_watchlist()
 
 st.title("📈 국내 주식 매수/매도 타이밍 분석")
-st.warning(
-    "⚠️ 이 대시보드는 **투자 참고용**이며 투자 자문이 아닙니다. "
-    "과거 성과가 미래 수익을 보장하지 않으며, 실제 매매 판단과 책임은 본인에게 있습니다. "
-    "이 프로그램은 실제 주문을 실행하지 않습니다."
-)
 
 # ---- 공통 설정 (사이드바) ----
 with st.sidebar:
