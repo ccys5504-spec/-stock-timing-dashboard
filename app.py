@@ -16,7 +16,7 @@ import streamlit as st
 
 from core import PERIOD_OPTIONS, VIEWS, Settings
 from data.fetch import load_watchlist
-from views import compare, holdings, ops_notes, screener, single_stock
+from views import holdings, ops_notes, screener, single_stock
 
 st.set_page_config(page_title="주식 매매 타이밍 분석", layout="wide")
 
@@ -133,10 +133,8 @@ active_view = st.radio(
 if active_view == VIEWS[0]:
     single_stock.render(WATCHLIST, years, settings)
 elif active_view == VIEWS[1]:
-    compare.render(WATCHLIST, years, settings)
-elif active_view == VIEWS[2]:
     screener.render(WATCHLIST, years, settings)
-elif active_view == VIEWS[3]:
-    holdings.render(settings)
+elif active_view == VIEWS[2]:
+    holdings.render(years, settings)
 else:
     ops_notes.render()

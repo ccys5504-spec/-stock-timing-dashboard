@@ -206,7 +206,7 @@ def render(watchlist: dict[str, str], years: int, settings: Settings) -> None:
                     save_watchlist(new_watchlist)
                     st.success(
                         f"관심종목을 교체했습니다: {weakest_name} → {best_candidate['종목명']}. "
-                        "'3종목 비교' 탭에서 바로 확인해보세요."
+                        "'단일 종목 분석' 탭에서 바로 확인해보세요."
                     )
                     st.rerun()
             else:

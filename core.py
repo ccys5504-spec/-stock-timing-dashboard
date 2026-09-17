@@ -17,7 +17,7 @@ from screener.scan import scan_signals
 from signals import indicators as ind
 
 PERIOD_OPTIONS = {"1년": 1, "3년": 3, "5년": 5}
-VIEWS = ["🔍 단일 종목 분석", "📊 3종목 비교", "🧭 종목 추천(스크리너)", "💼 내 보유종목", "📋 운영 노트"]
+VIEWS = ["🔍 단일 종목 분석", "🧭 종목 추천(스크리너)", "💼 내 보유종목", "📋 운영 노트"]
 CHART_TIMEFRAMES = {"일봉": None, "주봉": "W", "월봉": "ME", "년봉": "YE"}
 
 

@@ -1,17 +1,24 @@
-"""뷰 4: 내 보유종목."""
+"""뷰 4: 내 보유종목.
+
+2026-09-18: "3종목 비교" 탭을 없애고, 그 기능(여러 종목의 백테스트 성과를
+나란히 비교)을 이 탭 안으로 옮겼다 — 대신 관심종목 3개 고정이 아니라
+**실제 보유 중인 종목들**을 자동으로 불러와서 비교한다.
+"""
 from __future__ import annotations
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
+from backtest.engine import buy_and_hold_return_pct, run_backtest
 from core import Settings, prepare
 from data.fetch import load_holdings, resolve_stock_name, save_holdings
 
 
-def render(settings: Settings) -> None:
+def render(years: int, settings: Settings) -> None:
     st.caption(
         "실제로 보유 중인 종목의 수량·매입단가를 입력해두면, 현재가 대비 평가손익과 "
-        "지금 시점 매수/매도 신호를 한 화면에서 확인할 수 있습니다."
+        "지금 시점 매수/매도 신호, 그리고 전략 백테스트 비교까지 한 화면에서 확인할 수 있습니다."
     )
     st.info(
         "ℹ️ 여기 입력한 정보는 비공개 저장소에만 저장됩니다(이 앱을 초대받은 "
@@ -137,4 +144,100 @@ def render(settings: Settings) -> None:
     st.caption(
         "⚠️ 여기 표시되는 신호는 사이드바에 설정된 임계값/거래량 필터/손절 기준을 그대로 "
         "적용한 기계적 계산 결과이며, 투자 자문이 아닙니다."
+    )
+
+    st.divider()
+    _render_strategy_comparison(saved_holdings, years, settings)
+
+
+def _render_strategy_comparison(saved_holdings: list[dict], years: int, settings: Settings) -> None:
+    """보유종목들의 백테스트 성과를 나란히 비교한다.
+
+    예전 "3종목 비교" 탭이 하던 일과 같지만, 관심종목 3개 고정이 아니라
+    지금 입력해둔 보유종목을 자동으로 불러온다(중복 종목코드는 한 번만).
+    """
+    st.subheader("📊 보유종목 전략 백테스트 비교")
+
+    name_to_code: dict[str, str] = {}
+    seen_codes: set[str] = set()
+    for h in saved_holdings:
+        code = str(h.get("종목코드", "")).strip().zfill(6)
+        if not code or code in seen_codes:
+            continue
+        seen_codes.add(code)
+        name_to_code[resolve_stock_name(code) or code] = code
+
+    if not name_to_code:
+        st.caption("비교할 보유종목이 없습니다. 위에 종목코드를 입력하고 저장해보세요.")
+        return
+
+    st.caption("사이드바에서 설정한 조회 기간·임계값·거래량 필터·손절 규칙이 아래 종목에 동일하게 적용됩니다.")
+
+    rows = []
+    equity_curves = {}
+    signal_badges = {}
+
+    with st.spinner("보유종목별 데이터를 불러오고 백테스트하는 중..."):
+        for name, code in name_to_code.items():
+            df = prepare(code, years, settings)
+            if df is None:
+                rows.append({"종목": name, "오류": "데이터 없음"})
+                continue
+
+            result = run_backtest(
+                df, stop_loss_pct=settings.stop_loss_pct, trailing_stop_pct=settings.trailing_stop_pct,
+                exit_on_signal=settings.exit_on_signal, adaptive_exit=settings.adaptive_exit,
+            )
+            bh_return = buy_and_hold_return_pct(df)
+            latest = df.iloc[-1]
+
+            rows.append({
+                "종목": name,
+                "현재 신호": latest["SIGNAL"],
+                "전략 수익률": result.total_return_pct,
+                "단순보유 수익률": bh_return,
+                "MDD": result.mdd_pct,
+                "매매횟수": result.num_trades,
+                "승률": result.win_rate_pct,
+            })
+            equity_curves[name] = result.equity_curve / result.equity_curve.iloc[0]
+            signal_badges[name] = latest["SIGNAL"]
+
+    summary_df = pd.DataFrame(rows)
+
+    cols = st.columns(len(name_to_code))
+    for col, name in zip(cols, name_to_code):
+        sig = signal_badges.get(name, "—")
+        color = {"매수": "green", "매도": "red", "관망": "gray"}.get(sig, "gray")
+        with col:
+            st.markdown(f"**{name}**")
+            st.markdown(f"### :{color}[● {sig}]")
+
+    st.markdown("**백테스트 요약 비교**")
+    display_df = summary_df.copy()
+    for pct_col in ["전략 수익률", "단순보유 수익률", "MDD", "승률"]:
+        if pct_col in display_df.columns:
+            display_df[pct_col] = display_df[pct_col].apply(
+                lambda v: f"{v:+.1%}" if pd.notna(v) else "—"
+            )
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    if "전략 수익률" in summary_df and summary_df["전략 수익률"].notna().any():
+        best = summary_df.loc[summary_df["전략 수익률"].idxmax(), "종목"]
+        st.caption(f"💡 이 설정·기간 기준으로는 **{best}**의 전략 수익률이 가장 높았습니다.")
+
+    if equity_curves:
+        st.markdown("**전략 누적수익률 곡선 비교 (시작점 = 1.0)**")
+        fig = go.Figure()
+        for name, curve in equity_curves.items():
+            fig.add_trace(go.Scatter(x=curve.index, y=curve.values, name=name, mode="lines"))
+        fig.update_layout(height=450, yaxis_title="누적 배수 (1.0 = 원금)",
+                           legend=dict(orientation="h", yanchor="bottom", y=1.02))
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.caption(
+        "⚠️ 여러 조합을 시험해보며 '가장 수익률 높은 설정'을 찾는 것 자체가 과최적화(overfitting) "
+        "위험이 있습니다. 과거 데이터 한 번에 잘 맞는 설정이 미래에도 맞는다는 보장은 없습니다 — "
+        "상승장/하락장 등 서로 다른 기간에서 두루 검증(scripts/optimize.py)해보고 극단적으로 "
+        "낙관적인 조합은 의심하는 게 안전합니다."
     )

@@ -549,6 +549,10 @@ print(result[result['신호'] != '관망'])
 - 보유 중인데 **매도 신호**가 뜨면 상단에 경고가 뜹니다
 - 사이드바에서 손절을 켜뒀다면, 매입가 대비 손절 기준에 도달한 종목도 별도로
   경고합니다
+- 화면 맨 아래에는 **보유 중인 종목들의 전략 백테스트 성과를 나란히 비교**하는
+  표와 누적수익률 곡선 그래프가 자동으로 뜹니다(2026-09-18: 예전 "3종목 비교"
+  탭이 하던 일을 이 탭으로 옮기고, 고정된 관심종목 3개 대신 실제 보유종목을
+  자동으로 비교하도록 바꿨습니다)
 
 입력한 정보는 GitHub 비공개 Gist(설정 안 됐으면 로컬 `data/holdings.json`
 파일)에만 저장되고 그 외 어디로도 전송되지 않습니다 — 아래 "데이터 저장
@@ -590,7 +594,7 @@ Cloud에도 앱 관리 화면(Manage app) → Settings → Secrets에 같은 두
 _pyarrow_compat.py        # Windows pyarrow.compute 차단 우회 shim (pandas/streamlit보다 먼저 임포트)
 app.py                   # Streamlit 대시보드 진입점 (사이드바 설정 + 탭 라우팅만 담당)
 core.py                   # 탭들이 공유하는 헬퍼(데이터 로드/가공)와 설정값 묶음(Settings)
-views/                    # 탭별 화면 (single_stock/compare/screener/holdings/ops_notes)
+views/                    # 탭별 화면 (single_stock/screener/holdings/ops_notes)
 data/fetch.py             # 시세 데이터 수집 + 시가총액 상위 종목 목록 (FinanceDataReader)
 data/watchlist.json        # 관심 종목 목록 (앱에서 교체 제안을 적용하면 갱신됨)
 data/holdings.json         # 내 보유종목 (종목코드/수량/매입단가, 앱에서 입력·저장)
