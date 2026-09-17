@@ -23,7 +23,7 @@ from core import (
     VIEWS,
     Settings,
 )
-from data.fetch import load_watchlist
+from data.fetch import load_settings, load_watchlist, save_settings
 from views import holdings, ops_notes, screener, single_stock
 
 st.set_page_config(page_title="주식 매매 타이밍 분석", layout="wide")
@@ -33,27 +33,49 @@ WATCHLIST = load_watchlist()
 
 st.title("📈 국내 주식 매수/매도 타이밍 분석")
 
+
+def _safe_index(options: list[str], value, default: int) -> int:
+    """저장된 값이 지금 옵션 목록에 없으면(예전 버전 흔적 등) 기본 인덱스로."""
+    return options.index(value) if value in options else default
+
+
+def _clamp(value, lo, hi):
+    try:
+        return max(lo, min(hi, value))
+    except TypeError:
+        return lo
+
+
 # ---- 공통 설정 (사이드바) ----
+# 2026-09-18: 이 설정들을 관심종목/보유종목과 같은 방식(Gist 또는 로컬 파일)
+# 으로 저장해서, 재배포·새로고침 이후에도 마지막으로 골라둔 값이 그대로
+# 남도록 했다 — 사용자가 직접 바꾸기 전까지는 유지된다.
+_saved_settings = load_settings()
+
 with st.sidebar:
     st.header("설정")
-    period_label = st.selectbox("조회 기간", list(PERIOD_OPTIONS.keys()), index=1)
+    period_options = list(PERIOD_OPTIONS.keys())
+    period_label = st.selectbox(
+        "조회 기간", period_options,
+        index=_safe_index(period_options, _saved_settings["period_label"], 1),
+    )
     years = PERIOD_OPTIONS[period_label]
 
     st.divider()
     st.subheader("신호 임계값")
     threshold = st.slider(
         "임계값 (낮을수록 신호가 자주 뜸)",
-        min_value=1, max_value=3, value=1,
+        min_value=1, max_value=3, value=_clamp(_saved_settings["threshold"], 1, 3),
         help="지표 4개(이평선/RSI/MACD/볼린저밴드) 중 몇 개 이상 동시에 같은 방향을 "
         "가리켜야 신호로 인정할지 결정합니다.",
     )
 
     st.divider()
     st.subheader("거래량 필터")
+    volume_options = ["끔", "항상 켬", "자동(하락장에만)"]
     volume_mode_label = st.radio(
-        "적용 방식",
-        ["끔", "항상 켬", "자동(하락장에만)"],
-        index=2,
+        "적용 방식", volume_options,
+        index=_safe_index(volume_options, _saved_settings["volume_mode_label"], 2),
         help="신호가 뜬 날 거래량이 최근 평균보다 충분히 커야(관심이 실린 움직임) "
         "신호로 인정합니다. '자동'은 종가가 200일 이동평균 아래(하락장)일 때만 "
         "거래량 확인을 요구합니다 — 실측 결과 거래량 필터는 하락장 방어에는 "
@@ -63,27 +85,30 @@ with st.sidebar:
         "끔": False, "항상 켬": True, "자동(하락장에만)": "auto",
     }[volume_mode_label]
     volume_multiplier = st.slider(
-        "거래량 배수 (최근 20일 평균 대비)", min_value=1.0, max_value=2.0, value=1.2, step=0.1,
+        "거래량 배수 (최근 20일 평균 대비)", min_value=1.0, max_value=2.0,
+        value=_clamp(_saved_settings["volume_multiplier"], 1.0, 2.0), step=0.1,
         disabled=volume_mode_label == "끔",
     )
 
     st.divider()
     st.subheader("손절 규칙")
     use_stop_loss = st.checkbox(
-        "손절 사용", value=False,
+        "손절 사용", value=bool(_saved_settings["use_stop_loss"]),
         help="매수가 대비 일정 % 하락하면 신호와 무관하게 즉시 청산합니다.",
     )
-    stop_loss_pct = st.slider(
-        "손절 기준(%)", min_value=3, max_value=20, value=10, step=1,
+    stop_loss_slider = st.slider(
+        "손절 기준(%)", min_value=3, max_value=20,
+        value=_clamp(_saved_settings["stop_loss_slider"], 3, 20), step=1,
         disabled=not use_stop_loss,
-    ) / 100 if use_stop_loss else None
+    )
+    stop_loss_pct = stop_loss_slider / 100 if use_stop_loss else None
 
     st.divider()
     st.subheader("청산(매도) 방식")
+    exit_options = ["신호 기반 (기본)", "트레일링 스탑 단독", "적응형(상승장 트레일링+하락장 신호)"]
     exit_mode_label = st.radio(
-        "어떻게 팔지 결정할지",
-        ["신호 기반 (기본)", "트레일링 스탑 단독", "적응형(상승장 트레일링+하락장 신호)"],
-        index=0,
+        "어떻게 팔지 결정할지", exit_options,
+        index=_safe_index(exit_options, _saved_settings["exit_mode_label"], 0),
         help="'신호 기반'은 매도 신호가 뜨면 바로 팝니다(하락장 방어에 유리, "
         "다만 강한 상승장에서는 일찍 팔아 수익을 못 챙길 수 있음). '트레일링 스탑 "
         "단독'은 매도 신호를 무시하고 보유 중 최고가 대비 일정 % 하락할 때만 "
@@ -94,10 +119,13 @@ with st.sidebar:
     trailing_stop_pct = None
     exit_on_signal = True
     adaptive_exit = False
+    trailing_stop_slider = _saved_settings["trailing_stop_slider"]
     if exit_mode_label != "신호 기반 (기본)":
-        trailing_stop_pct = st.slider(
-            "트레일링 스탑 기준(%, 최고가 대비)", min_value=5, max_value=30, value=20, step=1,
-        ) / 100
+        trailing_stop_slider = st.slider(
+            "트레일링 스탑 기준(%, 최고가 대비)", min_value=5, max_value=30,
+            value=_clamp(_saved_settings["trailing_stop_slider"], 5, 30), step=1,
+        )
+        trailing_stop_pct = trailing_stop_slider / 100
         if exit_mode_label == "트레일링 스탑 단독":
             exit_on_signal = False
         else:
@@ -112,6 +140,19 @@ with st.sidebar:
     st.caption("💾 대시보드에서 만든 CSV/엑셀 파일을 구글드라이브 등에 옮기고 싶다면, "
                "다운로드한 뒤 직접 업로드하거나 Claude에게 'OO 파일 구글드라이브에 저장해줘'라고 "
                "요청하면 됩니다.")
+
+_current_settings = {
+    "period_label": period_label,
+    "threshold": threshold,
+    "volume_mode_label": volume_mode_label,
+    "volume_multiplier": volume_multiplier,
+    "use_stop_loss": use_stop_loss,
+    "stop_loss_slider": stop_loss_slider,
+    "exit_mode_label": exit_mode_label,
+    "trailing_stop_slider": trailing_stop_slider,
+}
+if _current_settings != _saved_settings:
+    save_settings(_current_settings)
 
 settings = Settings(
     threshold=threshold,

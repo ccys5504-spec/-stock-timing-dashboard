@@ -16,6 +16,7 @@ import requests
 
 _WATCHLIST_PATH = Path(__file__).parent / "watchlist.json"
 _HOLDINGS_PATH = Path(__file__).parent / "holdings.json"
+_SETTINGS_PATH = Path(__file__).parent / "settings.json"
 
 # ---- 관심종목/보유종목 저장 위치 ----
 # 2026-09-16: Streamlit Cloud는 코드가 재배포될 때마다(새 push든 수동
@@ -207,6 +208,54 @@ def save_holdings(holdings: list[dict]) -> None:
     if not _gist_write_file("holdings.json", json.dumps(holdings, ensure_ascii=False, indent=2)):
         _atomic_write_json(_HOLDINGS_PATH, holdings)
     _holdings_cache, _holdings_cache_at = list(holdings), time.monotonic()
+
+
+# 사이드바 "설정" 메뉴의 기본값. 2026-09-18: 예전엔 새로고침/재배포될 때마다
+# 이 값들로 항상 되돌아갔다 — 관심종목/보유종목처럼 이것도 Gist(또는 로컬
+# 파일)에 저장해서, 사용자가 마지막으로 골라둔 값이 다음에 열어도 그대로
+# 남도록 했다.
+_DEFAULT_SETTINGS: dict = {
+    "period_label": "3년",
+    "threshold": 1,
+    "volume_mode_label": "자동(하락장에만)",
+    "volume_multiplier": 1.2,
+    "use_stop_loss": False,
+    "stop_loss_slider": 10,
+    "exit_mode_label": "신호 기반 (기본)",
+    "trailing_stop_slider": 20,
+}
+
+_settings_cache: dict | None = None
+_settings_cache_at: float = 0.0
+
+
+def load_settings() -> dict:
+    """사이드바 설정값을 읽어온다. 저장된 적 없는 키는 기본값으로 채운다."""
+    global _settings_cache, _settings_cache_at
+    now = time.monotonic()
+    if _settings_cache is not None and now - _settings_cache_at < _GIST_CACHE_TTL:
+        return dict(_settings_cache)
+
+    content = _gist_read_file("settings.json")
+    if content is not None:
+        result = json.loads(content)
+    elif _SETTINGS_PATH.exists():
+        with open(_SETTINGS_PATH, encoding="utf-8") as f:
+            result = json.load(f)
+    else:
+        result = {}
+
+    merged = {**_DEFAULT_SETTINGS, **result}
+    _settings_cache, _settings_cache_at = merged, now
+    return dict(merged)
+
+
+def save_settings(settings: dict) -> None:
+    """사이드바 설정값을 저장한다 (Gist가 설정돼 있으면 Gist에, 아니면 로컬 파일에)."""
+    global _settings_cache, _settings_cache_at
+    if not _gist_write_file("settings.json", json.dumps(settings, ensure_ascii=False, indent=2)):
+        _atomic_write_json(_SETTINGS_PATH, settings)
+    _settings_cache, _settings_cache_at = dict(settings), time.monotonic()
 
 
 @functools.lru_cache(maxsize=1)
