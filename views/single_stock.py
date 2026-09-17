@@ -7,18 +7,39 @@ from plotly.subplots import make_subplots
 
 from backtest.engine import buy_and_hold_return_pct, run_backtest
 from core import CHART_TIMEFRAMES, Settings, prepare, resample_for_chart
+from data.fetch import load_holdings, resolve_stock_name
 from signals import indicators as ind
+
+
+def _holdings_options() -> dict[str, str]:
+    """보유종목 목록에서 {종목명: 종목코드}를 만든다(중복 종목코드는 한 번만)."""
+    result: dict[str, str] = {}
+    for h in load_holdings():
+        code = str(h.get("종목코드", "")).strip().zfill(6)
+        if not code or code in result.values():
+            continue
+        result[resolve_stock_name(code) or code] = code
+    return result
 
 
 def render(watchlist: dict[str, str], years: int, settings: Settings) -> None:
     jump = st.session_state["jump"]
-    options = list(watchlist.keys())
+    # 2026-09-18: 기본 선택지를 관심종목 대신 "보유종목"으로 바꿨다 — 실제로
+    # 갖고 있는 종목을 살펴보는 게 더 자주 쓰는 용도라서다. 다만 보유종목을
+    # 아직 하나도 안 넣었으면 고를 게 없어지므로, 그럴 때만 관심종목으로
+    # 대신한다. 보유하지 않은 새 종목을 보고 싶으면 '종목 추천(스크리너)'
+    # 탭에서 결과를 클릭해서 넘어오면 된다(jump).
+    held = _holdings_options()
+    base = held if held else watchlist
+    options = list(base.keys())
     if jump and jump[0] not in options:
         options = [jump[0]] + options
     default_index = options.index(jump[0]) if jump and jump[0] in options else 0
 
-    name = st.selectbox("종목 선택 (관심종목 + 스크리너에서 넘어온 종목)", options, index=default_index)
-    code = watchlist.get(name) or (jump[1] if jump and jump[0] == name else None)
+    label = "종목 선택 (보유종목 + 스크리너에서 넘어온 종목)" if held else \
+        "종목 선택 (관심종목 + 스크리너에서 넘어온 종목 — 보유종목을 입력하면 그게 먼저 보입니다)"
+    name = st.selectbox(label, options, index=default_index)
+    code = base.get(name) or (jump[1] if jump and jump[0] == name else None)
     st.caption(f"종목코드: {code}" + ("  · 🧭 스크리너에서 선택한 종목" if jump and jump[0] == name else ""))
 
     with st.spinner(f"{name}({code}) 데이터를 불러오는 중..."):
