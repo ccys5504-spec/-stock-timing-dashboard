@@ -6,7 +6,7 @@ import datetime as dt
 import pandas as pd
 import streamlit as st
 
-from core import VIEWS, Settings, prepare, run_screener, to_csv_bytes, to_excel_bytes
+from core import VIEW_SINGLE_STOCK, Settings, prepare, run_screener, to_csv_bytes, to_excel_bytes
 from data.fetch import save_watchlist
 
 
@@ -52,7 +52,7 @@ def _render_today_pick(settings: Settings) -> None:
         c4.metric("거래량 확인", "✅" if pick["거래량확인"] else "—")
         if st.button("🔍 이 종목 자세히 보기", key="today_pick_detail"):
             st.session_state["jump"] = (pick["종목명"], pick["종목코드"])
-            st.session_state["_pending_view"] = VIEWS[0]
+            st.session_state["_pending_view"] = VIEW_SINGLE_STOCK
             st.rerun()
     st.caption(
         f"사이드바 설정(임계값 ±{settings.threshold}) 기준, 시가총액 상위 "
@@ -134,7 +134,7 @@ def render(watchlist: dict[str, str], years: int, settings: Settings) -> None:
         if selected_rows:
             picked = display.iloc[selected_rows[0]]
             st.session_state["jump"] = (picked["종목명"], picked["종목코드"])
-            st.session_state["_pending_view"] = VIEWS[0]
+            st.session_state["_pending_view"] = VIEW_SINGLE_STOCK
             st.rerun()
 
         # ---- 파일로 저장 ----

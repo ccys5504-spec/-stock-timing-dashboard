@@ -17,7 +17,19 @@ from screener.scan import scan_signals
 from signals import indicators as ind
 
 PERIOD_OPTIONS = {"1년": 1, "3년": 3, "5년": 5}
-VIEWS = ["🔍 단일 종목 분석", "🧭 종목 추천(스크리너)", "💼 내 보유종목", "📋 운영 노트"]
+
+# 탭 이름을 이렇게 상수로 따로 빼둔 이유: 예전엔 app.py/screener.py가
+# VIEWS[0], VIEWS[1]처럼 "몇 번째 탭인지"로 서로를 가리켰는데, 2026-09-18에
+# 탭 순서를 바꿔달라는 요청을 받고 보니 그 방식은 순서를 바꿀 때마다
+# 엉뚱한 탭으로 안내하는 버그가 생기기 쉬웠다(예: "종목 추천에서 클릭하면
+# 단일 종목 분석으로 이동"하던 게 다른 탭으로 잘못 이동). 이제는 이름으로
+# 가리키므로 VIEWS의 순서를 바꿔도(= 이 리스트의 나열 순서만) 안전하다.
+VIEW_HOLDINGS = "💼 내 보유종목"
+VIEW_SINGLE_STOCK = "🔍 단일 종목 분석"
+VIEW_SCREENER = "🧭 종목 추천(스크리너)"
+VIEW_OPS_NOTES = "📋 운영 노트"
+VIEWS = [VIEW_HOLDINGS, VIEW_SINGLE_STOCK, VIEW_SCREENER, VIEW_OPS_NOTES]
+
 CHART_TIMEFRAMES = {"일봉": None, "주봉": "W", "월봉": "ME", "년봉": "YE"}
 
 

@@ -14,7 +14,15 @@ import _pyarrow_compat  # noqa: F401  # pandas/streamlit보다 반드시 먼저 
 
 import streamlit as st
 
-from core import PERIOD_OPTIONS, VIEWS, Settings
+from core import (
+    PERIOD_OPTIONS,
+    VIEW_HOLDINGS,
+    VIEW_OPS_NOTES,
+    VIEW_SCREENER,
+    VIEW_SINGLE_STOCK,
+    VIEWS,
+    Settings,
+)
 from data.fetch import load_watchlist
 from views import holdings, ops_notes, screener, single_stock
 
@@ -130,11 +138,11 @@ active_view = st.radio(
     "보기 선택", VIEWS, key="active_view", horizontal=True, label_visibility="collapsed"
 )
 
-if active_view == VIEWS[0]:
+if active_view == VIEW_SINGLE_STOCK:
     single_stock.render(WATCHLIST, years, settings)
-elif active_view == VIEWS[1]:
+elif active_view == VIEW_SCREENER:
     screener.render(WATCHLIST, years, settings)
-elif active_view == VIEWS[2]:
+elif active_view == VIEW_HOLDINGS:
     holdings.render(years, settings)
-else:
+elif active_view == VIEW_OPS_NOTES:
     ops_notes.render()
