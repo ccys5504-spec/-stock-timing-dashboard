@@ -32,6 +32,12 @@ VIEWS = [VIEW_HOLDINGS, VIEW_SINGLE_STOCK, VIEW_SCREENER, VIEW_OPS_NOTES]
 
 CHART_TIMEFRAMES = {"일봉": None, "주봉": "W", "월봉": "ME", "년봉": "YE"}
 
+# 2026-09-18: 월봉/년봉은 캔들 개수가 너무 적어 보이는 문제가 있었다 — 사이드바
+# "조회 기간"(예: 3년)만큼만 데이터를 가져오면 년봉은 캔들이 3~4개뿐이라
+# 그래프라고 부르기 민망한 수준이었다. 그래서 월봉/년봉을 볼 때는 신호/
+# 백테스트와 무관하게 차트 표시용으로만 더 오래된 데이터까지 따로 가져온다.
+CHART_EXTRA_YEARS = {"ME": 10, "YE": 25}
+
 
 @dataclass
 class Settings:
@@ -91,6 +97,25 @@ def resample_for_chart(df: pd.DataFrame, rule: str | None) -> pd.DataFrame:
         agg["Volume"] = "sum"
     resampled = df[list(agg.keys())].resample(rule).agg(agg).dropna(subset=["Close"])
     return ind.add_indicators(resampled)
+
+
+def chart_dataframe(code: str, rule: str | None, base_df: pd.DataFrame, years: int) -> pd.DataFrame:
+    """차트에 쓸 데이터프레임을 만든다.
+
+    일봉/주봉은 사이드바 조회 기간(base_df)으로 충분하지만, 월봉/년봉은
+    캔들이 몇 개 안 남아서 CHART_EXTRA_YEARS만큼 더 오래된 데이터를 따로
+    받아와 리샘플링한다(차트 표시 전용 — 신호/백테스트에는 영향 없음).
+    추가 조회가 실패하면 원래 base_df로 조용히 되돌아간다.
+    """
+    extra_years = CHART_EXTRA_YEARS.get(rule)
+    if extra_years and extra_years > years:
+        try:
+            extended_raw = load_data(code, extra_years)
+        except Exception:  # noqa: BLE001
+            extended_raw = None
+        if extended_raw is not None and not extended_raw.empty:
+            return resample_for_chart(extended_raw, rule)
+    return resample_for_chart(base_df, rule)
 
 
 def to_csv_bytes(df: pd.DataFrame) -> bytes:
