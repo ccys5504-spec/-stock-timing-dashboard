@@ -13,6 +13,7 @@ import streamlit as st
 from backtest.engine import buy_and_hold_return_pct, run_backtest
 from core import Settings, prepare
 from data.fetch import load_holdings, resolve_stock_name, save_holdings
+from views.order_link import render_order_link
 
 
 def render(years: int, settings: Settings) -> None:
@@ -145,6 +146,7 @@ def render(years: int, settings: Settings) -> None:
         "⚠️ 여기 표시되는 신호는 사이드바에 설정된 임계값/거래량 필터/손절 기준을 그대로 "
         "적용한 기계적 계산 결과이며, 투자 자문이 아닙니다."
     )
+    render_order_link()  # 매도/추가매수를 하려면 여기서 키움 WTS로 이동
 
     st.divider()
     _render_strategy_comparison(saved_holdings, years, settings)

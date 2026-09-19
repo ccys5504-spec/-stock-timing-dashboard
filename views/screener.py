@@ -8,6 +8,7 @@ import streamlit as st
 
 from core import VIEW_SINGLE_STOCK, Settings, prepare, run_screener, to_csv_bytes, to_excel_bytes
 from data.fetch import save_watchlist
+from views.order_link import render_order_link
 
 
 TODAY_PICK_UNIVERSE = 100  # "오늘의 추천"이 훑어보는 시가총액 상위 종목 수 (고정)
@@ -54,6 +55,7 @@ def _render_today_pick(settings: Settings) -> None:
             st.session_state["jump"] = (pick["종목명"], pick["종목코드"])
             st.session_state["_pending_view"] = VIEW_SINGLE_STOCK
             st.rerun()
+        render_order_link(pick["종목명"], str(pick["종목코드"]))
     st.caption(
         f"사이드바 설정(임계값 ±{settings.threshold}) 기준, 시가총액 상위 "
         f"{TODAY_PICK_UNIVERSE}개 중 점수가 가장 높은 매수 후보입니다. 매수 신호가 "

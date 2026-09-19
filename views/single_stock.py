@@ -9,6 +9,7 @@ from backtest.engine import buy_and_hold_return_pct, run_backtest
 from core import CHART_TIMEFRAMES, Settings, chart_dataframe, prepare
 from data.fetch import load_holdings, resolve_stock_name
 from signals import indicators as ind
+from views.order_link import render_order_link
 
 
 def _holdings_options() -> dict[str, str]:
@@ -70,6 +71,7 @@ def render(watchlist: dict[str, str], years: int, settings: Settings) -> None:
             f"자동 거래량 필터: 현재 장세 :{regime_color}[**{regime_label}**]"
             f"(종가 vs 200일선){vol_note}"
         )
+    render_order_link(name, str(code))
 
     c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     c1.metric("전략 누적수익률", f"{result.total_return_pct:+.1%}")
