@@ -128,17 +128,17 @@ def test_switch_defaults_do_not_change_baseline():
     args = (pdata, market, index, dates[400], dates[-1])
     base = run_portfolio_backtest(*args, top_k=5)
     explicit = run_portfolio_backtest(
-        *args, top_k=5, use_regime=False, atr_initial_mult=2.5, atr_trail_mult=3.5, weighting="inverse_vol",
+        *args, top_k=5, use_regime=True, atr_initial_mult=None, atr_trail_mult=None, weighting="inverse_vol",
     )
     pd.testing.assert_series_equal(base.equity_curve, explicit.equity_curve)
 
 
-def test_stops_off_means_no_stop_outs():
+def test_stops_off_means_no_stop_outs_and_stops_on_can_trigger():
     dates, pdata, market, index = _synthetic_world()
-    r = run_portfolio_backtest(
-        pdata, market, index, dates[400], dates[-1], top_k=5, atr_initial_mult=None, atr_trail_mult=None,
-    )
-    assert r.num_stopped_out == 0
+    args = (pdata, market, index, dates[400], dates[-1])
+    assert run_portfolio_backtest(*args, top_k=5).num_stopped_out == 0  # 기본값: 손절 끔
+    on = run_portfolio_backtest(*args, top_k=5, atr_initial_mult=2.5, atr_trail_mult=3.5)
+    assert on.num_stopped_out > 0
 
 
 def test_invalid_weighting_rejected():
@@ -147,9 +147,11 @@ def test_invalid_weighting_rejected():
         run_portfolio_backtest(pdata, market, index, dates[400], dates[-1], weighting="magic")
 
 
-def test_regime_filter_is_off_by_default():
-    from backtest.portfolio_engine import USE_REGIME_FILTER
-    assert USE_REGIME_FILTER is False
+def test_defaults_are_regime_on_and_atr_stops_off():
+    # 생존편향 없는 종목군 검증(2026-09-20)으로 정한 기본값 — 바꾸려면 근거부터 다시 잴 것
+    from backtest.portfolio_engine import USE_ATR_STOPS, USE_REGIME_FILTER
+    assert USE_REGIME_FILTER is True
+    assert USE_ATR_STOPS is False
 
 
 def test_stop_on_close_ignores_intraday_wicks_and_defaults_unchanged():
@@ -162,3 +164,26 @@ def test_stop_on_close_ignores_intraday_wicks_and_defaults_unchanged():
     assert (on.equity_curve > 0).all()
     # 종가 기준은 장중 저가 기준보다 손절이 덜 걸린다(같거나 적다)
     assert on.num_stopped_out <= base.num_stopped_out
+
+
+def test_delisted_holding_is_closed_at_last_close_and_haircut_lowers_result():
+    dates, pdata, market, index = _synthetic_world()
+    victim = sorted(pdata)[0]
+    cut = dates[560]
+    pdata = {c: (d[d.index <= cut] if c == victim else d) for c, d in pdata.items()}
+    args = (pdata, market, index, dates[400], dates[-1])
+    r = run_portfolio_backtest(*args, top_k=12)
+    assert (r.equity_curve > 0).all()
+    # 폐지된 종목을 들고 있었다면 마지막 종가 이후엔 보유가 남아 있지 않아야 한다
+    for entry in r.holdings_log:
+        if entry["날짜"] > cut + pd.Timedelta(days=7):
+            assert victim not in entry["보유종목"]
+    harsh = run_portfolio_backtest(*args, top_k=12, delist_haircut=0.9)
+    assert harsh.total_return_pct <= r.total_return_pct + 1e-12
+
+
+def test_universe_top_n_restricts_candidates():
+    dates, pdata, market, index = _synthetic_world()
+    r = run_portfolio_backtest(pdata, market, index, dates[400], dates[-1], top_k=5, universe_top_n=6)
+    held = {c for e in r.holdings_log for c in e["보유종목"]}
+    assert held  # 후보가 좁아져도 매매는 일어난다

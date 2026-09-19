@@ -33,3 +33,21 @@ def test_summarize_equity_return_and_mdd():
     total, mdd = summarize_equity(pd.Series([1.0, 1.5, 0.9, 1.2], index=idx))
     assert total == pytest.approx(0.2)
     assert mdd == pytest.approx(0.9 / 1.5 - 1)
+
+
+def test_pit_equal_weight_holds_within_month_and_handles_delisting():
+    from backtest.benchmarks import pit_equal_weight_equity
+    from tests.helpers import make_ohlcv
+
+    dates = pd.bdate_range("2023-01-02", periods=520)
+    a = make_ohlcv(dates, seed=1, drift=0.001, vol=0.01)
+    b = make_ohlcv(dates[:400], seed=2, drift=0.001, vol=0.01)  # 400일째에 상장폐지
+    shares = {"A": 1e6, "B": 1e6}
+    cal = dates[300:]
+    eq = pit_equal_weight_equity({"A": a, "B": b}, cal, top_n=2, shares=shares)
+    assert len(eq) == len(cal)
+    assert eq.iloc[0] == 1.0 and (eq > 0).all() and eq.notna().all()
+    # 폐지 뒤에는 A 하나만 남아 A와 같은 방향으로 움직여야 한다(죽은 B가 계속 후보로 남지 않음)
+    tail = eq.iloc[-40:]
+    a_tail = a["Close"].reindex(cal).iloc[-40:]
+    assert (tail.pct_change().dropna().round(6) == a_tail.pct_change().dropna().round(6)).mean() > 0.9

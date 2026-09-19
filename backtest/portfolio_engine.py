@@ -45,14 +45,15 @@ from strategy.momentum import rank_universe
 # round_trip_cost 인자로 실행 시점에 덮어쓸 수 있다(비용 스트레스 테스트용).
 ROUND_TRIP_COST = 0.003
 
-# 2026-09-20: 지수 200일선 장세필터를 기본으로 끈다(사용자 결정: 방어는 ATR 손절에 맡기고
-# 수익 제고 우선). scripts/portfolio_ablation.py로 잰 결과 — 필터를 끄면 전체 수익률이
-# 상위100/15종목 +357%→+618%, 상위200/15종목 +319%→+631%, 100/10종목 +196%→+349%,
-# 100/20종목 +322%→+493%로 일관되게 오르고, 전체 MDD는 같거나 최대 6%p 악화된다.
-# 대가: 2016~21 구간의 낙폭이 3~9%p 커지고 박스권(2016-18) 수익은 일부 설정에서 낮아진다.
-# ⚠️ 종목군이 '오늘의 생존 종목'이라 하락 후 반등한 종목만 남아 있어, 필터의 방어
-# 효과가 과소평가됐을 가능성이 있다. _regime_multiplier()는 그대로 두었다.
-USE_REGIME_FILTER = False
+# 2026-09-20 (2차, 이 값들이 최종): 처음엔 '오늘의 시총 상위 100개'라는 생존편향 종목군에서
+# 잰 결과로 장세필터를 껐다(+357%→+618%). 그런데 상장폐지 종목을 포함해 그 시점의 시총 상위를
+# 매월 다시 뽑는 공정한 종목군(scripts/portfolio_pit_backtest.py, portfolio_pit_ablation.py)에서
+# 재보니 결론이 뒤집혔다 — 장세필터를 켜는 쪽이 낫고(전체 -1.5%→+6.3%, MDD -43.5%→-38.7%),
+# ATR 손절은 수익을 크게 깎는다(켬 +6.3% vs 끔 +93.8%, MDD -38.7% vs -47.6%). 편향 종목군에서는
+# 반등한 승자만 남아 필터의 비용만 보였던 것이다. 그래서 장세필터는 켜고 ATR 손절은 끈다.
+# (ATR 손절 로직/스위치는 그대로 남아 있다: use_regime / atr_initial_mult / atr_trail_mult)
+USE_REGIME_FILTER = True
+USE_ATR_STOPS = False
 
 TOP_K = 15
 # 이미 보유 중인 종목은 순위가 (보유 종목 수 top_k) × 이 배수 밖으로 밀려나야 매도
@@ -250,10 +251,13 @@ def run_portfolio_backtest(
     top_k: int = TOP_K,
     round_trip_cost: float = ROUND_TRIP_COST,
     use_regime: bool = USE_REGIME_FILTER,
-    atr_initial_mult: float | None = ATR_INITIAL_MULT,
-    atr_trail_mult: float | None = ATR_TRAIL_MULT,
+    atr_initial_mult: float | None = ATR_INITIAL_MULT if USE_ATR_STOPS else None,
+    atr_trail_mult: float | None = ATR_TRAIL_MULT if USE_ATR_STOPS else None,
     weighting: str = "inverse_vol",
     stop_on_close: bool = False,
+    universe_top_n: int | None = None,
+    delist_haircut: float = 0.0,
+    shares: dict[str, float] | None = None,
 ) -> PortfolioBacktestResult:
     """월 1회 리밸런싱 포트폴리오 백테스트.
 
@@ -274,6 +278,12 @@ def run_portfolio_backtest(
     stop_on_close=True면 장중 저가가 손절선을 건드려도 바로 팔지 않고, 그날 '종가'가
     손절선 아래일 때만 다음 거래일 시가에 판다(장중 꼬리에 털리는 걸 줄이는 대신
     갭하락 손실은 더 받는다).
+
+    universe_top_n을 주면 매 리밸런싱 시점의 상위 N개만 후보로 삼는다(시점 기준 유니버스;
+    shares를 주면 시가총액 근사, 아니면 거래대금 기준 — strategy/momentum.py 참고). price_data에 상장폐지 종목의 시세까지 넣으면
+    생존편향이 줄어든다(scripts/portfolio_pit_backtest.py). 보유 중인 종목의 시세가
+    끝나면(상장폐지) 마지막 종가에서 청산하며, delist_haircut(0~1)은 그때 추가로 잃는
+    비율이다(정리매매 이후 실제 회수액이 마지막 종가보다 낮을 수 있어 넣은 민감도 장치).
     """
     if weighting not in ("inverse_vol", "equal"):
         raise ValueError(f"weighting은 'inverse_vol' 또는 'equal'이어야 합니다: {weighting}")
@@ -304,6 +314,14 @@ def run_portfolio_backtest(
         available = close[close.index <= date]
         fallback_price = float(available.iloc[-1]) if not available.empty else 0.0
         return fallback_price * 0.05
+
+    # 시세가 끝난 종목(상장폐지)의 마지막 거래일. 조회가 며칠 늦은 정상 종목을 폐지로
+    # 오인하지 않도록 달력 끝보다 5일 넘게 앞서 끝난 종목만 폐지로 본다.
+    calendar_last = calendar[-1]
+    data_end: dict[str, pd.Timestamp] = {
+        code: df.index[-1] for code, df in price_data.items()
+        if len(df) and df.index[-1] < calendar_last - pd.Timedelta(days=5)
+    }
 
     cash = 1.0
     # code -> {"shares", "avg_buy_price", "buy_date", "peak", "stop_price"}
@@ -350,6 +368,15 @@ def run_portfolio_backtest(
         ))
 
     for date in calendar:
+        # 0) 시세가 끝난 종목은 마지막 종가에서 청산한다(상장폐지). 폐지 직전 폭락(정리매매)은
+        #    시세에 이미 들어 있고, 그 이후 회수액 불확실성은 delist_haircut으로 조절한다.
+        for code in list(holdings.keys()):
+            end_date = data_end.get(code)
+            if end_date is not None and end_date < date:
+                last_close = float(price_data[code].loc[end_date, "Close"])
+                _close_trade(code, date, last_close * (1 - delist_haircut), stopped_out=False)
+                pending_exits.discard(code)
+
         # 1) 전월 말 산정한 목표 비중을 오늘 시가에 반영 (룩어헤드 금지: 어제
         #    종가까지의 정보로 정한 목표를, 그 정보를 몰랐던 오늘 아침에 산다)
         if pending_targets is not None:
@@ -463,12 +490,15 @@ def run_portfolio_backtest(
         value = cash
         for code, pos in holdings.items():
             close = _last_price(code, date)
-            value += pos["shares"] * (close if close is not None else pos["avg_buy_price"])
+            if close is None:  # 거래정지 등으로 오늘 시세가 없으면 직전 종가로 평가(취득가 아님)
+                prior = price_data[code]["Close"].asof(date) if code in price_data else float("nan")
+                close = float(prior) if pd.notna(prior) and prior > 0 else pos["avg_buy_price"]
+            value += pos["shares"] * close
         equity.append(value)
 
         # 5) 오늘이 월말이면, 오늘 종가까지의 정보로 다음 리밸런싱 목표를 정함
         if date in rebalance_dates:
-            ranked = rank_universe(price_data, date)
+            ranked = rank_universe(price_data, date, top_n=universe_top_n, shares=shares)
             target_codes = _select_with_hysteresis(
                 ranked, top_k, top_k * RANK_CUTOFF_MULTIPLE, set(holdings.keys())
             )
@@ -497,3 +527,10 @@ def run_portfolio_backtest(
 
     equity_curve = pd.Series(equity, index=calendar)
     return PortfolioBacktestResult(equity_curve=equity_curve, trades=trades, holdings_log=holdings_log)
+
+
+# 앱(strategy/live_portfolio.py)이 쓰는 공개 이름. 밑줄 함수는 테스트/엔진 내부용으로 두고
+# 바깥에서는 이 이름으로 부른다.
+select_with_hysteresis = _select_with_hysteresis
+inverse_vol_weights = _inverse_vol_weights
+regime_multiplier = _regime_multiplier

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from strategy.momentum import rank_universe
+
 
 def equal_weight_equity(
     price_data: dict[str, pd.DataFrame], start: pd.Timestamp, end: pd.Timestamp
@@ -39,3 +41,41 @@ def summarize_equity(equity: pd.Series) -> tuple[float, float]:
     total = float(equity.iloc[-1] / equity.iloc[0] - 1) if len(equity) > 1 else 0.0
     mdd = float((equity / equity.cummax() - 1).min())
     return total, mdd
+
+
+def pit_equal_weight_equity(
+    price_data: dict[str, pd.DataFrame], calendar: pd.DatetimeIndex, top_n: int,
+    shares: dict[str, float] | None = None,
+) -> pd.Series:
+    """시점 기준(PIT) 동일가중 기준선: 매월 말 그날의 거래대금 상위 top_n개를 뽑아(상장폐지될
+    종목 포함) 다음 달 동안 동일가중으로 '그대로 보유'한다(월 안에서는 재조정 안 함).
+    시세가 끝난 종목(폐지)은 마지막 종가에서 현금화한 것으로 본다. 비용은 반영하지 않는다.
+
+    v2 전략이 종목 선택(모멘텀·손절)으로 실제로 값어치를 더했는지를 "같은 후보군을 그냥
+    동일가중으로 들고 있었을 때"와 공정하게(생존편향 없이) 비교하기 위한 기준선이다.
+    """
+    close = pd.DataFrame({c: d["Close"] for c, d in price_data.items()}).reindex(calendar).ffill()
+    month_key = calendar.to_period("M")
+    month_ends = sorted(set(pd.Series(calendar, index=calendar).groupby(month_key).max().tolist()))
+    equity = pd.Series(1.0, index=calendar)
+    level = 1.0
+    start_pos = 0
+    held: list[str] = []
+    boundaries = [calendar.get_loc(d) for d in month_ends]
+    # 각 월말(리밸런싱) 다음 날부터 다음 월말까지: 그 월말 종가에 동일가중으로 사서 그대로 보유
+    for k, end_pos in enumerate(boundaries):
+        if held:
+            seg_start = start_pos  # 직전 리밸런싱일
+            base = close.iloc[seg_start][held]
+            path = close.iloc[seg_start + 1: end_pos + 1][held].div(base).mean(axis=1, skipna=True)
+            equity.iloc[seg_start + 1: end_pos + 1] = level * path.values
+            if len(path):
+                level = float(level * path.iloc[-1])
+        elif end_pos > 0:
+            equity.iloc[: end_pos + 1] = level
+        start_pos = end_pos
+        ranked = rank_universe(price_data, calendar[end_pos], top_n=top_n, shares=shares)
+        held = ranked["코드"].tolist() if not ranked.empty else []  # 후보가 없으면 현금
+    if start_pos + 1 < len(calendar):
+        equity.iloc[start_pos + 1:] = level
+    return equity

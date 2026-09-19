@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 import pandas as pd
@@ -16,6 +17,7 @@ import streamlit as st
 from data.fetch import fetch_ohlcv, get_universe
 from screener.scan import scan_signals
 from signals import indicators as ind
+from strategy.live_portfolio import build_target_portfolio, current_regime, dropped_holdings
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +32,9 @@ PERIOD_OPTIONS = {"1년": 1, "3년": 3, "5년": 5}
 VIEW_HOLDINGS = "💼 내 보유종목"
 VIEW_SINGLE_STOCK = "🔍 단일 종목 분석"
 VIEW_SCREENER = "🧭 종목 추천(스크리너)"
+VIEW_PORTFOLIO_V2 = "🧺 포트폴리오(v2·실험)"
 VIEW_OPS_NOTES = "📋 운영 노트"
-VIEWS = [VIEW_HOLDINGS, VIEW_SINGLE_STOCK, VIEW_SCREENER, VIEW_OPS_NOTES]
+VIEWS = [VIEW_HOLDINGS, VIEW_SINGLE_STOCK, VIEW_SCREENER, VIEW_PORTFOLIO_V2, VIEW_OPS_NOTES]
 
 CHART_TIMEFRAMES = {"일봉": None, "주봉": "W", "월봉": "ME", "년봉": "YE"}
 
@@ -88,6 +91,42 @@ def run_screener(markets, top_n, threshold_, vfilter, vmult):
         buy_threshold=threshold_, sell_threshold=-threshold_,
         volume_filter=vfilter, volume_multiplier=vmult,
     )
+
+
+V2_UNIVERSE_TOP_N = 100  # 백테스트와 같은 규칙: 그 시점 시가총액 상위 100개가 후보
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def run_v2_portfolio(held_codes: tuple[str, ...]) -> dict:
+    """v2 전략의 지금 시점 목표 포트폴리오. 시세 조회에 실패한 종목은 개수를 함께 돌려준다."""
+    universe = get_universe(markets=("KOSPI", "KOSDAQ"), top_n=V2_UNIVERSE_TOP_N)
+    names = dict(zip(universe["Code"], universe["Name"]))
+    markets = dict(zip(universe["Code"], universe["Market"]))
+    price_data: dict[str, pd.DataFrame] = {}
+    failed: list[str] = []
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        futures = {ex.submit(fetch_ohlcv, c, 2): c for c in universe["Code"]}
+        for fut in as_completed(futures):
+            code = futures[fut]
+            try:
+                price_data[code] = fut.result()
+            except Exception as e:  # noqa: BLE001 — 한 종목 실패로 전체를 막지 않되 개수는 보고
+                logger.warning("v2 시세 조회 실패 %s: %s", code, e)
+                failed.append(code)
+    index_data = {}
+    for market, code in (("KOSPI", "KS11"), ("KOSDAQ", "KQ11")):
+        try:
+            index_data[market] = fetch_ohlcv(code, 2)
+        except Exception as e:  # noqa: BLE001 — 지수를 못 받으면 배율 1.0(중립)으로 두고 화면에 알린다
+            logger.warning("v2 지수 조회 실패 %s: %s", code, e)
+    regime = current_regime(index_data)
+    held = set(held_codes)
+    table, as_of = build_target_portfolio(price_data, names, markets, held_codes=held, regime=regime)
+    return {
+        "table": table, "as_of": as_of, "regime": regime, "index_missing": [m for m in ("KOSPI", "KOSDAQ") if m not in index_data], "requested": len(universe), "loaded": len(price_data),
+        "failed": [(c, names.get(c, c)) for c in sorted(failed)],
+        "dropped": dropped_holdings(table, held, names),
+    }
 
 
 def resample_for_chart(df: pd.DataFrame, rule: str | None) -> pd.DataFrame:
