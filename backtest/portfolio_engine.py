@@ -45,6 +45,15 @@ from strategy.momentum import rank_universe
 # round_trip_cost 인자로 실행 시점에 덮어쓸 수 있다(비용 스트레스 테스트용).
 ROUND_TRIP_COST = 0.003
 
+# 2026-09-20: 지수 200일선 장세필터를 기본으로 끈다(사용자 결정: 방어는 ATR 손절에 맡기고
+# 수익 제고 우선). scripts/portfolio_ablation.py로 잰 결과 — 필터를 끄면 전체 수익률이
+# 상위100/15종목 +357%→+618%, 상위200/15종목 +319%→+631%, 100/10종목 +196%→+349%,
+# 100/20종목 +322%→+493%로 일관되게 오르고, 전체 MDD는 같거나 최대 6%p 악화된다.
+# 대가: 2016~21 구간의 낙폭이 3~9%p 커지고 박스권(2016-18) 수익은 일부 설정에서 낮아진다.
+# ⚠️ 종목군이 '오늘의 생존 종목'이라 하락 후 반등한 종목만 남아 있어, 필터의 방어
+# 효과가 과소평가됐을 가능성이 있다. _regime_multiplier()는 그대로 두었다.
+USE_REGIME_FILTER = False
+
 TOP_K = 15
 # 이미 보유 중인 종목은 순위가 (보유 종목 수 top_k) × 이 배수 밖으로 밀려나야 매도
 # 대상이 된다 — 흔히 쓰는 "목표치의 2배" 버퍼 관행이며 데이터에 맞춰 고른 값이
@@ -240,6 +249,10 @@ def run_portfolio_backtest(
     end: pd.Timestamp,
     top_k: int = TOP_K,
     round_trip_cost: float = ROUND_TRIP_COST,
+    use_regime: bool = USE_REGIME_FILTER,
+    atr_initial_mult: float | None = ATR_INITIAL_MULT,
+    atr_trail_mult: float | None = ATR_TRAIL_MULT,
+    weighting: str = "inverse_vol",
 ) -> PortfolioBacktestResult:
     """월 1회 리밸런싱 포트폴리오 백테스트.
 
@@ -252,7 +265,14 @@ def run_portfolio_backtest(
     round_trip_cost: 왕복 거래비용 가정치(기본 0.3%). 회전율이 높은 이
       전략에서 비용 가정이 결과를 얼마나 바꾸는지 보는 비용 스트레스
       테스트(scripts/portfolio_cost_stress.py)에서 1.5배/2배로 올려서 쓴다.
+
+    use_regime/atr_initial_mult/atr_trail_mult/weighting은 구성요소를 하나씩 끄거나
+    바꿔서 각각이 수익에 얼마나 기여하는지 재는 실험용 스위치다(scripts/
+    portfolio_ablation.py). 기본값은 지금 운영 중인 v2 그대로라서 인자를 안 주면
+    결과가 달라지지 않는다. atr_*_mult에 None을 주면 그 손절을 쓰지 않는다.
     """
+    if weighting not in ("inverse_vol", "equal"):
+        raise ValueError(f"weighting은 'inverse_vol' 또는 'equal'이어야 합니다: {weighting}")
     buy_cost = round_trip_cost / 2
     sell_cost = round_trip_cost / 2
 
@@ -375,7 +395,10 @@ def run_portfolio_backtest(
                         holdings[code] = {
                             "shares": bought_shares, "avg_buy_price": op,
                             "buy_date": date, "peak": op,
-                            "stop_price": op - ATR_INITIAL_MULT * _atr_at(code, date),
+                            "stop_price": (
+                                op - atr_initial_mult * _atr_at(code, date)
+                                if atr_initial_mult is not None else 0.0
+                            ),
                         }
                 elif delta < 0 and code in holdings:  # 비중 축소(부분 매도)
                     sell_shares = min(holdings[code]["shares"], -delta / op)
@@ -414,8 +437,9 @@ def run_portfolio_backtest(
                 continue
             pos["peak"] = max(pos["peak"], close)
             atr = _atr_at(code, date)
-            trailing_stop = pos["peak"] - ATR_TRAIL_MULT * atr
-            pos["stop_price"] = max(pos["stop_price"], trailing_stop)
+            if atr_trail_mult is not None:
+                trailing_stop = pos["peak"] - atr_trail_mult * atr
+                pos["stop_price"] = max(pos["stop_price"], trailing_stop)
 
         # 4) 오늘 종가 기준 평가금액
         value = cash
@@ -430,7 +454,10 @@ def run_portfolio_backtest(
             target_codes = _select_with_hysteresis(
                 ranked, top_k, top_k * RANK_CUTOFF_MULTIPLE, set(holdings.keys())
             )
-            weights = _inverse_vol_weights(target_codes, price_data, date)
+            if weighting == "equal":
+                weights = {c: 1 / len(target_codes) for c in target_codes if c in price_data}
+            else:
+                weights = _inverse_vol_weights(target_codes, price_data, date)
             # 2026-09-16: ADX 무추세 필터(_trend_multiplier)를 여기서 뺐다.
             # 박스권(2016-2019) 방어에는 도움이 됐지만(샤프 0.05→0.42) 그
             # 대신 추세장에서도 노출을 깎아서 전체 기간 수익률이 288%→192%로
@@ -442,7 +469,7 @@ def run_portfolio_backtest(
             # _trend_multiplier() 자체는 지우지 않고 남겨뒀다 — 나중에 다시
             # 켜고 싶을 수도 있고, 이 결정의 맥락(왜 안 쓰는지)도 남겨야 해서.
             regime_mult = {
-                market: _regime_multiplier(df[df.index <= date])
+                market: _regime_multiplier(df[df.index <= date]) if use_regime else 1.0
                 for market, df in index_data.items()
             }
             pending_targets = {

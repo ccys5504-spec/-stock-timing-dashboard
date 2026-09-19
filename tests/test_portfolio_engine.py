@@ -119,3 +119,34 @@ def test_empty_period_raises():
     with pytest.raises(ValueError):
         run_portfolio_backtest(pdata, market, index, dates[-1] + pd.Timedelta(days=30),
                                dates[-1] + pd.Timedelta(days=60))
+
+
+# ---- 실험 스위치(scripts/portfolio_ablation.py) --------------------------------
+
+def test_switch_defaults_do_not_change_baseline():
+    dates, pdata, market, index = _synthetic_world()
+    args = (pdata, market, index, dates[400], dates[-1])
+    base = run_portfolio_backtest(*args, top_k=5)
+    explicit = run_portfolio_backtest(
+        *args, top_k=5, use_regime=False, atr_initial_mult=2.5, atr_trail_mult=3.5, weighting="inverse_vol",
+    )
+    pd.testing.assert_series_equal(base.equity_curve, explicit.equity_curve)
+
+
+def test_stops_off_means_no_stop_outs():
+    dates, pdata, market, index = _synthetic_world()
+    r = run_portfolio_backtest(
+        pdata, market, index, dates[400], dates[-1], top_k=5, atr_initial_mult=None, atr_trail_mult=None,
+    )
+    assert r.num_stopped_out == 0
+
+
+def test_invalid_weighting_rejected():
+    dates, pdata, market, index = _synthetic_world()
+    with pytest.raises(ValueError):
+        run_portfolio_backtest(pdata, market, index, dates[400], dates[-1], weighting="magic")
+
+
+def test_regime_filter_is_off_by_default():
+    from backtest.portfolio_engine import USE_REGIME_FILTER
+    assert USE_REGIME_FILTER is False
