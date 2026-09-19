@@ -106,7 +106,8 @@ def run_stock(code: str, today: dt.date) -> list[dict]:
     for train_start, test_start, test_end in folds:
         try:
             raw = fetch_ohlcv_range(code, train_start.isoformat(), test_end.isoformat(), warmup_days=300)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 — 이 폴드를 건너뛰되 조용히 넘기지 않는다
+            print(f"  ⚠️ {code} {train_start}~{test_end} 폴드 조회 실패로 제외: {type(e).__name__}: {e}")
             continue
         if raw.index.min().date() > train_start + dt.timedelta(days=60):
             # 상장일이 훈련 시작일보다 한참 뒤라 이 종목은 이 폴드에서 아직

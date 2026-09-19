@@ -90,13 +90,22 @@ def _one_stock_bear(code: str, name: str):
 
 
 def _run_parallel(candidates: pd.DataFrame, fn) -> list[dict]:
+    """종목별 결과를 모은다. 결과를 못 낸 종목(조회 실패/구간 데이터 없음)은
+    조용히 빠지지 않도록 개수와 이름을 출력한다(2026-09-20 점검서 지적)."""
     rows = []
+    missing = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [executor.submit(fn, row["Code"], row["Name"]) for _, row in candidates.iterrows()]
+        futures = {
+            executor.submit(fn, row["Code"], row["Name"]): row["Name"] for _, row in candidates.iterrows()
+        }
         for future in as_completed(futures):
             r = future.result()
             if r is not None:
                 rows.append(r)
+            else:
+                missing.append(futures[future])
+    if missing:
+        print(f"  ⚠️ 요청 {len(candidates)}개 중 {len(missing)}개는 결과가 없어 제외됨: {', '.join(sorted(missing))}")
     return rows
 
 

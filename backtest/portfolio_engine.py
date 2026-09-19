@@ -17,7 +17,7 @@
 2026-09-16 추가 (회전율/비용 민감도 + 박스권 대응, PROMPT_V2.md Phase B 일부):
 - **순위 이력(hysteresis)**: 처음엔 "상위 K에서 한 칸이라도 빠지면 곧바로
   매도"였는데, 이러면 순위가 엎치락뒤치락하는 것만으로도 불필요한 매매가
-  계속 발생한다. 이제는 이미 보유 중인 종목은 순위가 RANK_CUTOFF(상위 K의
+  계속 발생한다. 이제는 이미 보유 중인 종목은 순위가 컷오프(top_k × RANK_CUTOFF_MULTIPLE, 상위 K의
   2배) 밖으로 완전히 밀려나야 매도 대상이 되고, 빈 자리만 새 상위권 종목으로
   채운다.
 - **소액 리밸런싱 생략**: 목표 비중과 현재 비중의 차이가 포트폴리오 가치의
@@ -46,9 +46,13 @@ from strategy.momentum import rank_universe
 ROUND_TRIP_COST = 0.003
 
 TOP_K = 15
-# 이미 보유 중인 종목은 순위가 이 밖으로 밀려나야 매도 대상이 된다(상위 K의
-# 2배 — 흔히 쓰는 "목표치의 2배" 버퍼 관행. 데이터에 맞춰 고른 값이 아님).
-RANK_CUTOFF = TOP_K * 2
+# 이미 보유 중인 종목은 순위가 (보유 종목 수 top_k) × 이 배수 밖으로 밀려나야 매도
+# 대상이 된다 — 흔히 쓰는 "목표치의 2배" 버퍼 관행이며 데이터에 맞춰 고른 값이
+# 아니다. 2026-09-20 수정: 예전엔 `RANK_CUTOFF = TOP_K * 2`(=30) 고정 상수를 썼기
+# 때문에 run_portfolio_backtest(top_k=...)로 보유 종목 수를 바꿔도 컷오프가 30에
+# 그대로여서 설계(top_k의 2배)와 다르게 돌았다. 지금은 top_k에서 매번 계산한다.
+# (기본 top_k=15에서는 컷오프가 30으로 예전과 똑같아 문서에 기록된 결과는 그대로다.)
+RANK_CUTOFF_MULTIPLE = 2
 # 포트폴리오 가치 대비 이보다 작은 리밸런싱 조정은 생략한다(기존 보유 종목의
 # 비중 미세조정에 한함 — 신규 진입/완전 청산에는 적용 안 됨).
 MIN_TRADE_THRESHOLD = 0.015
@@ -423,7 +427,9 @@ def run_portfolio_backtest(
         # 5) 오늘이 월말이면, 오늘 종가까지의 정보로 다음 리밸런싱 목표를 정함
         if date in rebalance_dates:
             ranked = rank_universe(price_data, date)
-            target_codes = _select_with_hysteresis(ranked, top_k, RANK_CUTOFF, set(holdings.keys()))
+            target_codes = _select_with_hysteresis(
+                ranked, top_k, top_k * RANK_CUTOFF_MULTIPLE, set(holdings.keys())
+            )
             weights = _inverse_vol_weights(target_codes, price_data, date)
             # 2026-09-16: ADX 무추세 필터(_trend_multiplier)를 여기서 뺐다.
             # 박스권(2016-2019) 방어에는 도움이 됐지만(샤프 0.05→0.42) 그

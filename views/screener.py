@@ -12,6 +12,41 @@ from views.order_link import render_order_link
 
 
 TODAY_PICK_UNIVERSE = 100  # "오늘의 추천"이 훑어보는 시가총액 상위 종목 수 (고정)
+FAILURE_WARN_RATIO = 0.05  # 실패 종목이 이 비율 이상이면 눈에 띄는 경고로 표시
+
+
+def _render_scan_health(scan_result: pd.DataFrame) -> None:
+    """스캔이 실제로 몇 종목을 성공/실패했고 데이터가 언제 기준인지 보여준다.
+
+    예전에는 일부 종목이 조용히 빠져도 "정상 결과"처럼 보였다(2026-09-20 점검서
+    지적). 요청 수·성공 수·실패 종목·데이터 기준일(다른 종목보다 오래된 종목
+    수 포함)을 항상 표시한다.
+    """
+    requested = scan_result.attrs.get("requested")
+    failed = scan_result.attrs.get("failed", [])
+    if requested is None:
+        return
+
+    ok = requested - len(failed)
+    parts = [f"조회 성공 {ok}/{requested}개"]
+    if failed:
+        parts.append(f"실패 {len(failed)}개")
+    if "기준일" in scan_result.columns and not scan_result.empty:
+        latest = scan_result["기준일"].max()
+        stale = int((scan_result["기준일"] < latest).sum())
+        parts.append(f"데이터 기준일 {latest}" + (f"(이보다 오래된 종목 {stale}개)" if stale else ""))
+    message = " · ".join(parts)
+
+    if failed and requested and len(failed) / requested >= FAILURE_WARN_RATIO:
+        st.warning(f"⚠️ {message} — 실패 비율이 높아 결과가 불완전할 수 있습니다.")
+    else:
+        st.caption(message)
+    if failed:
+        with st.expander(f"조회 실패한 {len(failed)}종목과 사유 보기"):
+            st.dataframe(
+                pd.DataFrame(failed, columns=["종목코드", "종목명", "사유"]),
+                use_container_width=True, hide_index=True,
+            )
 
 
 def _render_today_pick(settings: Settings) -> None:
@@ -31,6 +66,7 @@ def _render_today_pick(settings: Settings) -> None:
             st.warning("오늘의 추천을 계산하지 못했습니다(데이터 조회 실패). 아래에서 직접 스캔해보세요.")
             return
 
+    _render_scan_health(today_result)
     if today_result.empty:
         st.caption("스캔 결과가 없습니다.")
         return
@@ -102,6 +138,7 @@ def render(watchlist: dict[str, str], years: int, settings: Settings) -> None:
         st.caption("👆 '스캔 시작'을 누르면 결과가 여기에 표시됩니다.")
     elif scan_result.empty:
         st.warning("스캔 결과가 없습니다. 데이터 조회에 실패했을 수 있습니다.")
+        _render_scan_health(scan_result)
     else:
         n_buy = (scan_result["신호"] == "매수").sum()
         n_sell = (scan_result["신호"] == "매도").sum()
@@ -109,6 +146,7 @@ def render(watchlist: dict[str, str], years: int, settings: Settings) -> None:
         m1.metric("스캔한 종목 수", len(scan_result))
         m2.metric("매수 신호", f"{n_buy}개")
         m3.metric("매도 신호", f"{n_sell}개")
+        _render_scan_health(scan_result)
 
         display = scan_result[scan_result["신호"] != "관망"] if only_actionable else scan_result
         display = display.reset_index(drop=True)

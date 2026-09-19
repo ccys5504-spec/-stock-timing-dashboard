@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import io
+import logging
 from dataclasses import dataclass
 
 import pandas as pd
@@ -15,6 +16,8 @@ import streamlit as st
 from data.fetch import fetch_ohlcv, get_universe
 from screener.scan import scan_signals
 from signals import indicators as ind
+
+logger = logging.getLogger(__name__)
 
 PERIOD_OPTIONS = {"1년": 1, "3년": 3, "5년": 5}
 
@@ -61,7 +64,8 @@ def prepare(code: str, years: int, settings: Settings) -> pd.DataFrame | None:
     """데이터 로드 + 지표/신호 계산 + 기간 컷까지 한 번에."""
     try:
         raw = load_data(code, years)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 — 화면에는 "데이터 없음"으로 보이지만 원인은 로그에 남긴다
+        logger.warning("데이터 조회 실패 %s(%s년): %s: %s", code, years, type(e).__name__, e)
         return None
     df = ind.build_signals(
         raw,
@@ -111,7 +115,8 @@ def chart_dataframe(code: str, rule: str | None, base_df: pd.DataFrame, years: i
     if extra_years and extra_years > years:
         try:
             extended_raw = load_data(code, extra_years)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 — 확장 조회가 실패하면 기존 데이터로 그리되 원인은 남긴다
+            logger.warning("차트용 확장 조회 실패 %s(%s년): %s: %s", code, extra_years, type(e).__name__, e)
             extended_raw = None
         if extended_raw is not None and not extended_raw.empty:
             return resample_for_chart(extended_raw, rule)

@@ -29,7 +29,13 @@ _SETTINGS_PATH = Path(__file__).parent / "settings.json"
 # Gist를 읽고 쓰며, 없으면(로컬 개발 등) 예전처럼 로컬 JSON 파일로
 # 동작한다 — 둘 다 안 되면 앱이 아예 안 켜지는 일은 없도록 항상 로컬
 # 파일을 최종 대비책으로 둔다.
-_SECRETS_PATH = Path(__file__).parent.parent / ".streamlit" / "secrets.toml"
+# STOCK_TIMING_SECRETS_PATH 환경변수로 시크릿 파일 위치를 바꿀 수 있다 — 단위
+# 테스트(tests/conftest.py)가 진짜 토큰이 든 파일 대신 존재하지 않는 경로를 가리켜서
+# 테스트가 실수로 실제 Gist를 읽거나 쓰지 못하게 하려는 용도다. 평소엔 쓰지 않는다.
+_SECRETS_PATH = Path(
+    os.environ.get("STOCK_TIMING_SECRETS_PATH")
+    or Path(__file__).parent.parent / ".streamlit" / "secrets.toml"
+)
 _GIST_API_TIMEOUT = 10
 _GIST_CACHE_TTL = 10  # 초 — 매 rerun마다 Gist API를 부르지 않도록 짧게 캐싱
 

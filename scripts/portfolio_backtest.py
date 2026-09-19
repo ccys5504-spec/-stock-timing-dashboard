@@ -9,56 +9,23 @@
 from __future__ import annotations
 
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _pyarrow_compat  # noqa: F401,E402  # pandas보다 반드시 먼저 임포트
 
 import pandas as pd  # noqa: E402
 
+from _common import WARMUP_DAYS, load_universe_prices, report_load  # noqa: E402
+from backtest.benchmarks import equal_weight_equity, summarize_equity  # noqa: E402
 from backtest.engine import buy_and_hold_return_pct  # noqa: E402
 from backtest.portfolio_engine import run_portfolio_backtest  # noqa: E402
 from data.fetch import fetch_ohlcv_range, get_universe  # noqa: E402
-
-# 모멘텀 룩백(최대 12개월+skip 1개월=13개월)과 장세 필터용 200일 이동평균을
-# 모두 커버하려면 start 이전에 이 정도 워밍업이 필요하다.
-WARMUP_DAYS = 450
-
-
-MAX_WORKERS = 12
-
-
-def load_universe_price_data(top_n: int, start: str, end: str):
-    universe = get_universe(markets=("KOSPI", "KOSDAQ"), top_n=top_n)
-    price_data: dict[str, pd.DataFrame] = {}
-    market_by_code: dict[str, str] = {}
-    print(f"{len(universe)}개 종목 데이터 조회 중... (병렬, 수 분 소요될 수 있습니다)")
-
-    def _fetch(code: str):
-        return code, fetch_ohlcv_range(code, start, end, warmup_days=WARMUP_DAYS)
-
-    done = 0
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {
-            executor.submit(_fetch, row["Code"]): row["Market"] for _, row in universe.iterrows()
-        }
-        for future in as_completed(futures):
-            market = futures[future]
-            try:
-                code, df = future.result()
-            except Exception:  # noqa: BLE001
-                continue
-            price_data[code] = df
-            market_by_code[code] = market
-            done += 1
-            if done % 50 == 0:
-                print(f"  {done}/{len(universe)} 완료")
-    return price_data, market_by_code
 
 
 def main() -> None:
@@ -77,8 +44,10 @@ def main() -> None:
         "KOSDAQ": fetch_ohlcv_range("KQ11", start, end, warmup_days=WARMUP_DAYS),
     }
 
-    price_data, market_by_code = load_universe_price_data(top_n, start, end)
-    print(f"\n{len(price_data)}개 종목 데이터 확보 완료. 백테스트 실행 중...\n")
+    universe = get_universe(markets=("KOSPI", "KOSDAQ"), top_n=top_n)
+    print(f"{len(universe)}개 종목 데이터 조회 중... (병렬, 수 분 소요될 수 있습니다)")
+    price_data, market_by_code, failed = load_universe_prices(universe, start, end)
+    report_load(len(universe), price_data, failed)
 
     result = run_portfolio_backtest(
         price_data, market_by_code, index_data,
@@ -101,8 +70,10 @@ def main() -> None:
     kospi_period = kospi_period[
         (kospi_period.index >= pd.Timestamp(start)) & (kospi_period.index <= pd.Timestamp(end))
     ]
-    kospi_bh = buy_and_hold_return_pct(kospi_period)
-    print(f"\n(참고) 같은 기간 코스피 지수 단순보유 수익률: {kospi_bh:+.1%}")
+    print(f"\n[비교 기준선 — 같은 기간]")
+    print(f"  코스피 지수 단순보유        : {buy_and_hold_return_pct(kospi_period):+.1%}")
+    ew_total, ew_mdd = summarize_equity(equal_weight_equity(price_data, pd.Timestamp(start), pd.Timestamp(end)))
+    print(f"  같은 종목군 동일가중 보유    : {ew_total:+.1%} (MDD {ew_mdd:.1%}, 생존편향 섞인 상한선)")
 
 
 if __name__ == "__main__":
