@@ -253,6 +253,7 @@ def run_portfolio_backtest(
     atr_initial_mult: float | None = ATR_INITIAL_MULT,
     atr_trail_mult: float | None = ATR_TRAIL_MULT,
     weighting: str = "inverse_vol",
+    stop_on_close: bool = False,
 ) -> PortfolioBacktestResult:
     """월 1회 리밸런싱 포트폴리오 백테스트.
 
@@ -270,6 +271,9 @@ def run_portfolio_backtest(
     바꿔서 각각이 수익에 얼마나 기여하는지 재는 실험용 스위치다(scripts/
     portfolio_ablation.py). 기본값은 지금 운영 중인 v2 그대로라서 인자를 안 주면
     결과가 달라지지 않는다. atr_*_mult에 None을 주면 그 손절을 쓰지 않는다.
+    stop_on_close=True면 장중 저가가 손절선을 건드려도 바로 팔지 않고, 그날 '종가'가
+    손절선 아래일 때만 다음 거래일 시가에 판다(장중 꼬리에 털리는 걸 줄이는 대신
+    갭하락 손실은 더 받는다).
     """
     if weighting not in ("inverse_vol", "equal"):
         raise ValueError(f"weighting은 'inverse_vol' 또는 'equal'이어야 합니다: {weighting}")
@@ -309,6 +313,7 @@ def run_portfolio_backtest(
     holdings_log = []
 
     pending_targets: dict[str, float] | None = None  # 다음 거래일 시가에 반영할 목표 비중
+    pending_exits: set[str] = set()  # stop_on_close: 어제 종가가 손절선 아래여서 오늘 시가에 팔 종목
 
     # 세 함수 모두 0 이하 값은 None으로 취급한다 — 데이터 품질 문제(거래정지일에
     # 0으로 채워진 시가/저가 등)로 가격이 0 이하로 들어오면, 그걸 실제 가격으로
@@ -414,7 +419,18 @@ def run_portfolio_backtest(
             })
 
         # 2) ATR 손절/트레일링 체크 — 전일 종가까지 확정된 기준선 vs 당일 저가
+        if stop_on_close:
+            for code in list(pending_exits):
+                if code not in holdings:
+                    pending_exits.discard(code)
+                    continue
+                op = _open_price(code, date)
+                if op is not None:  # 시가가 없으면(거래정지 등) 다음 거래일로 미룸
+                    _close_trade(code, date, op, stopped_out=True)
+                    pending_exits.discard(code)
         for code in list(holdings.keys()):
+            if stop_on_close:
+                break
             pos = holdings[code]
             low = _low_price(code, date)
             if low is None:
@@ -435,6 +451,8 @@ def run_portfolio_backtest(
             close = _last_price(code, date)
             if close is None:
                 continue
+            if stop_on_close and close <= pos["stop_price"]:
+                pending_exits.add(code)  # 어제까지 확정된 손절선 vs 오늘 종가
             pos["peak"] = max(pos["peak"], close)
             atr = _atr_at(code, date)
             if atr_trail_mult is not None:

@@ -150,3 +150,15 @@ def test_invalid_weighting_rejected():
 def test_regime_filter_is_off_by_default():
     from backtest.portfolio_engine import USE_REGIME_FILTER
     assert USE_REGIME_FILTER is False
+
+
+def test_stop_on_close_ignores_intraday_wicks_and_defaults_unchanged():
+    dates, pdata, market, index = _synthetic_world()
+    args = (pdata, market, index, dates[400], dates[-1])
+    base = run_portfolio_backtest(*args, top_k=5)
+    explicit_off = run_portfolio_backtest(*args, top_k=5, stop_on_close=False)
+    pd.testing.assert_series_equal(base.equity_curve, explicit_off.equity_curve)
+    on = run_portfolio_backtest(*args, top_k=5, stop_on_close=True)
+    assert (on.equity_curve > 0).all()
+    # 종가 기준은 장중 저가 기준보다 손절이 덜 걸린다(같거나 적다)
+    assert on.num_stopped_out <= base.num_stopped_out
