@@ -51,3 +51,12 @@ def test_regime_multiplier_scales_weights_and_labels():
     up = pd.DataFrame({"Close": [100 + i for i in range(300)]}, index=dates)
     assert current_regime({"KOSPI": up})["KOSPI"][0] == 1.0
     assert current_regime({"KOSDAQ": pd.DataFrame()})["KOSDAQ"][0] == 1.0  # 지수 없으면 중립
+
+
+def test_default_live_ranking_is_market_cap_order():
+    data, names, markets = _world()
+    marcap = {c: float(1000 - i) for i, c in enumerate(sorted(data))}  # 코드 순서대로 시총이 작아진다
+    table, _ = build_target_portfolio(data, names, markets, top_k=3, marcap=marcap)
+    assert list(table["종목코드"]) == sorted(data)[:3]
+    mom, _ = build_target_portfolio(data, names, markets, top_k=3, ranking="momentum")
+    assert len(mom) == 3

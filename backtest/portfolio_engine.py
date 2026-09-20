@@ -55,7 +55,16 @@ ROUND_TRIP_COST = 0.003
 USE_REGIME_FILTER = True
 USE_ATR_STOPS = False
 
-TOP_K = 15
+# 2026-09-20 사용자 결정: 포트폴리오는 3종목까지만. (예전 기본은 15종목이었고, 검증 스크립트 인자로
+# 15를 주면 그대로 재현된다.) 종목 수가 적을수록 한두 종목의 결과가 성과를 좌우해서 변동이 훨씬 크다.
+TOP_K = 3
+
+# 2026-09-20: 후보(시점 기준 시총 상위 100개)를 정렬하는 기본 기준. 3종목 포트폴리오에서 모멘텀 순위는
+# 10년 -25.8%(MDD -76%)로 무작위 3종목(중앙값 +36.8%, 30회 중 24회가 모멘텀보다 좋음)보다도 나빴고,
+# 시가총액 큰 순 3종목은 +349%(MDD -50%)였다(scripts/portfolio_pit_selection_test.py). 다만 이 기준은
+# 4개 기준(모멘텀/무작위/시총/저변동성)을 비교해 고른 것이고, 10년 성과가 삼성전자·SK하이닉스 상승에
+# 크게 기대고 있어(사실상 대형주 집중) 사후선택·기간 의존 위험이 있다. 15종목 이상에서의 결과는 README 참고.
+DEFAULT_RANKING = "large_cap"
 # 이미 보유 중인 종목은 순위가 (보유 종목 수 top_k) × 이 배수 밖으로 밀려나야 매도
 # 대상이 된다 — 흔히 쓰는 "목표치의 2배" 버퍼 관행이며 데이터에 맞춰 고른 값이
 # 아니다. 2026-09-20 수정: 예전엔 `RANK_CUTOFF = TOP_K * 2`(=30) 고정 상수를 썼기
@@ -67,6 +76,12 @@ RANK_CUTOFF_MULTIPLE = 2
 # 비중 미세조정에 한함 — 신규 진입/완전 청산에는 적용 안 됨).
 MIN_TRADE_THRESHOLD = 0.015
 MAX_WEIGHT_PER_STOCK = 0.12
+
+
+def weight_cap(top_k: int) -> float:
+    """종목당 비중 상한. 15종목에서는 기존 12%지만, 종목 수가 적으면 12%로는 합계가 100%가 안 되므로
+    (3종목 x 12% = 36%) 균등비중의 1.5배까지는 허용한다: max(12%, 1.5/종목수)."""
+    return max(MAX_WEIGHT_PER_STOCK, 1.5 / max(top_k, 1))
 ATR_PERIOD = 14
 ATR_INITIAL_MULT = 2.5
 ATR_TRAIL_MULT = 3.5
@@ -193,6 +208,36 @@ def _select_with_hysteresis(
     return kept + new_picks
 
 
+RANKING_MODES = ("momentum", "random", "large_cap", "low_vol")
+
+
+def _reorder_candidates(
+    ranked: pd.DataFrame, mode: str, price_data: dict[str, pd.DataFrame], as_of: pd.Timestamp,
+    shares: dict[str, float] | None, rng: np.random.Generator,
+) -> pd.DataFrame:
+    """모멘텀 순위 대신 다른 기준으로 후보를 정렬한다(종목 선택 우위 검증용 대조군).
+    같은 후보군(rank_universe 통과 종목)을 그대로 두고 순서만 바꾸므로 나머지 규칙(비중, 순위 이력,
+    장세, 비용)은 모멘텀 전략과 완전히 같다.
+      random: 무작위 / large_cap: 시가총액 큰 순(shares 필요) / low_vol: 최근 60일 변동성 낮은 순
+    """
+    if ranked.empty:
+        return ranked
+    codes = ranked["코드"].tolist()
+    if mode == "random":
+        order = list(rng.permutation(len(codes)))
+        return ranked.iloc[order].reset_index(drop=True)
+    if mode == "large_cap":
+        if shares is None:
+            raise ValueError("large_cap 정렬에는 shares가 필요합니다.")
+        key = {c: float(price_data[c]["Close"].asof(as_of)) * shares.get(c, 0.0) for c in codes}
+        return ranked.assign(_k=ranked["코드"].map(key)).sort_values("_k", ascending=False).drop(columns="_k").reset_index(drop=True)
+    vols = {}
+    for c in codes:
+        r = price_data[c]["Close"][price_data[c].index <= as_of].pct_change().dropna().tail(VOL_LOOKBACK_DAYS)
+        vols[c] = float(r.std()) if len(r) >= 10 else float("inf")
+    return ranked.assign(_k=ranked["코드"].map(vols)).sort_values("_k", ascending=True).drop(columns="_k").reset_index(drop=True)
+
+
 def _inverse_vol_weights(
     codes: list[str], price_data: dict[str, pd.DataFrame], as_of: pd.Timestamp,
     max_weight: float = MAX_WEIGHT_PER_STOCK,
@@ -258,6 +303,8 @@ def run_portfolio_backtest(
     universe_top_n: int | None = None,
     delist_haircut: float = 0.0,
     shares: dict[str, float] | None = None,
+    ranking: str | None = None,
+    ranking_seed: int = 0,
 ) -> PortfolioBacktestResult:
     """월 1회 리밸런싱 포트폴리오 백테스트.
 
@@ -285,6 +332,12 @@ def run_portfolio_backtest(
     끝나면(상장폐지) 마지막 종가에서 청산하며, delist_haircut(0~1)은 그때 추가로 잃는
     비율이다(정리매매 이후 실제 회수액이 마지막 종가보다 낮을 수 있어 넣은 민감도 장치).
     """
+    # 기본: 상장주식수(shares)를 주면 시총 순(DEFAULT_RANKING), 안 주면(시가총액을 알 수 없으므로) 모멘텀
+    if ranking is None:
+        ranking = DEFAULT_RANKING if shares is not None else "momentum"
+    if ranking not in RANKING_MODES:
+        raise ValueError(f"ranking은 {RANKING_MODES} 중 하나여야 합니다: {ranking}")
+    rank_rng = np.random.default_rng(ranking_seed)
     if weighting not in ("inverse_vol", "equal"):
         raise ValueError(f"weighting은 'inverse_vol' 또는 'equal'이어야 합니다: {weighting}")
     buy_cost = round_trip_cost / 2
@@ -499,13 +552,15 @@ def run_portfolio_backtest(
         # 5) 오늘이 월말이면, 오늘 종가까지의 정보로 다음 리밸런싱 목표를 정함
         if date in rebalance_dates:
             ranked = rank_universe(price_data, date, top_n=universe_top_n, shares=shares)
+            if ranking != "momentum":
+                ranked = _reorder_candidates(ranked, ranking, price_data, date, shares, rank_rng)
             target_codes = _select_with_hysteresis(
                 ranked, top_k, top_k * RANK_CUTOFF_MULTIPLE, set(holdings.keys())
             )
             if weighting == "equal":
                 weights = {c: 1 / len(target_codes) for c in target_codes if c in price_data}
             else:
-                weights = _inverse_vol_weights(target_codes, price_data, date)
+                weights = _inverse_vol_weights(target_codes, price_data, date, max_weight=weight_cap(top_k))
             # 2026-09-16: ADX 무추세 필터(_trend_multiplier)를 여기서 뺐다.
             # 박스권(2016-2019) 방어에는 도움이 됐지만(샤프 0.05→0.42) 그
             # 대신 추세장에서도 노출을 깎아서 전체 기간 수익률이 288%→192%로
@@ -532,5 +587,6 @@ def run_portfolio_backtest(
 # 앱(strategy/live_portfolio.py)이 쓰는 공개 이름. 밑줄 함수는 테스트/엔진 내부용으로 두고
 # 바깥에서는 이 이름으로 부른다.
 select_with_hysteresis = _select_with_hysteresis
+reorder_candidates = _reorder_candidates
 inverse_vol_weights = _inverse_vol_weights
 regime_multiplier = _regime_multiplier

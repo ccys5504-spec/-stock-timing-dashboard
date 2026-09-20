@@ -187,3 +187,51 @@ def test_universe_top_n_restricts_candidates():
     r = run_portfolio_backtest(pdata, market, index, dates[400], dates[-1], top_k=5, universe_top_n=6)
     held = {c for e in r.holdings_log for c in e["보유종목"]}
     assert held  # 후보가 좁아져도 매매는 일어난다
+
+
+# ---- 대조군 정렬(종목 선택 우위 검증용) ------------------------------------------
+
+def test_reorder_candidates_modes():
+    import numpy as np
+    from backtest.portfolio_engine import _reorder_candidates
+
+    dates = pd.bdate_range("2023-01-02", periods=200)
+    data = {
+        "LOWV": make_ohlcv(dates, seed=1, vol=0.005, start_price=10_000),
+        "HIV": make_ohlcv(dates, seed=2, vol=0.05, start_price=10_000),
+        "BIG": make_ohlcv(dates, seed=3, vol=0.02, start_price=10_000),
+    }
+    ranked = pd.DataFrame({"코드": ["HIV", "BIG", "LOWV"], "모멘텀점수": [3, 2, 1], "평균거래대금": [1, 1, 1]})
+    shares = {"LOWV": 1.0, "HIV": 1.0, "BIG": 1e9}
+    rng = np.random.default_rng(0)
+    assert _reorder_candidates(ranked, "large_cap", data, dates[-1], shares, rng)["코드"].iloc[0] == "BIG"
+    lv = _reorder_candidates(ranked, "low_vol", data, dates[-1], shares, rng)["코드"].tolist()
+    assert lv[0] == "LOWV" and lv[-1] == "HIV"
+    r1 = _reorder_candidates(ranked, "random", data, dates[-1], shares, np.random.default_rng(5))["코드"].tolist()
+    r2 = _reorder_candidates(ranked, "random", data, dates[-1], shares, np.random.default_rng(5))["코드"].tolist()
+    assert r1 == r2 and sorted(r1) == sorted(ranked["코드"])  # 같은 시드는 같은 결과, 종목은 그대로
+
+
+def test_ranking_default_unchanged_and_invalid_rejected():
+    dates, pdata, market, index = _synthetic_world()
+    args = (pdata, market, index, dates[400], dates[-1])
+    shares = {c: 1e6 for c in pdata}
+    base = run_portfolio_backtest(*args, top_k=5, shares=shares)
+    explicit = run_portfolio_backtest(*args, top_k=5, shares=shares, ranking="large_cap")
+    pd.testing.assert_series_equal(base.equity_curve, explicit.equity_curve)
+    with pytest.raises(ValueError):
+        run_portfolio_backtest(*args, ranking="astrology")
+    rnd = run_portfolio_backtest(*args, top_k=5, ranking="random", ranking_seed=1)
+    assert (rnd.equity_curve > 0).all()
+
+
+def test_default_portfolio_size_is_three_and_weight_cap_scales():
+    from backtest.portfolio_engine import TOP_K, weight_cap
+    assert TOP_K == 3
+    assert weight_cap(15) == 0.12  # 15종목은 기존과 동일
+    assert weight_cap(3) == 0.5
+    dates = pd.bdate_range("2023-01-02", periods=120)
+    data = {f"S{i}": make_ohlcv(dates, seed=i, vol=v) for i, v in enumerate([0.01, 0.02, 0.04])}
+    w = _inverse_vol_weights(list(data), data, dates[-1], max_weight=weight_cap(3))
+    assert sum(w.values()) == pytest.approx(1.0, abs=1e-6)  # 3종목이어도 100% 투자가 가능해야 한다
+    assert max(w.values()) <= 0.5 + 1e-6

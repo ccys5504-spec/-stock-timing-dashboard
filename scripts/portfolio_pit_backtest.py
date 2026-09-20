@@ -8,7 +8,7 @@
   A와 B의 차이 = 생존편향이 v2 수익률을 얼마나 부풀렸는지에 대한 추정
   기준선: 시점 기준 동일가중(상장폐지 포함), 코스피 단순보유
 
-사용법: python scripts/portfolio_pit_backtest.py [유니버스크기=100] [보유종목수=15] [--export 경로.json]
+사용법: python scripts/portfolio_pit_backtest.py [유니버스크기=100] [보유종목수=엔진 기본값(3)] [--export 경로.json]
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ import pandas as pd  # noqa: E402
 
 from backtest.benchmarks import pit_equal_weight_equity, summarize_equity  # noqa: E402
 from backtest.engine import buy_and_hold_return_pct  # noqa: E402
-from backtest.portfolio_engine import run_portfolio_backtest  # noqa: E402
+from backtest.portfolio_engine import TOP_K, run_portfolio_backtest  # noqa: E402
 from data.fetch import fetch_ohlcv_range  # noqa: E402
 
 CACHE_DIR = ROOT / "data" / "pit_cache"
@@ -61,7 +61,7 @@ def load_cache() -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     top_n = int(args[0]) if len(args) > 0 else 100
-    top_k = int(args[1]) if len(args) > 1 else 15
+    top_k = int(args[1]) if len(args) > 1 else TOP_K
     export = sys.argv[sys.argv.index("--export") + 1] if "--export" in sys.argv else None
     today = pd.Timestamp.today().normalize()
 
@@ -79,21 +79,24 @@ def main() -> None:
     }
     survivors_data = {c: price_data[c] for c in survivors}
 
-    old_cfg = dict(use_regime=False, atr_initial_mult=2.5, atr_trail_mult=3.5)
+    # (이름, 데이터, 인자, 모든 구간을 돌릴지) — 민감도 변형은 시간 절약을 위해 '전체' 구간만 돈다
     variants = [
-        ("A 현재 기본(장세 켬·손절 끔)", price_data, {}),
-        ("A2 폐지 종목 회수 -50% 가정", price_data, dict(delist_haircut=0.5)),
-        ("A3 왕복비용 1.0%", price_data, dict(round_trip_cost=0.010)),
-        ("B 현재 상장 종목만", survivors_data, {}),
-        ("C 이전 설정(장세 끔·ATR손절)", price_data, old_cfg),
+        ("A 현재 기본(시총 큰 순·장세 켬·손절 끔)", price_data, {}, True),
+        ("M 모멘텀 순위(비교용)", price_data, dict(ranking="momentum"), True),
+        ("A2 폐지 종목 회수 -50% 가정", price_data, dict(delist_haircut=0.5), False),
+        ("A3 왕복비용 1.0%", price_data, dict(round_trip_cost=0.010), False),
+        ("B 현재 상장 종목만", survivors_data, {}, False),
     ]
-    print(f"{'':<34}" + "".join(f"{w[0]:>24}" for w in WINDOWS))
-    print(f"{'':<34}" + "".join(f"{'수익률 / MDD':>24}" for _ in WINDOWS))
+    print(f"{'':<40}" + "".join(f"{w[0]:>22}" for w in WINDOWS))
+    print(f"{'':<40}" + "".join(f"{'수익률 / MDD':>22}" for _ in WINDOWS))
     curves: dict[str, pd.Series] = {}
     stats: dict[str, dict] = {}
-    for name, data, kwargs in variants:
+    for name, data, kwargs, all_windows in variants:
         cells = []
         for label, start, end in WINDOWS:
+            if not all_windows and label != "전체":
+                cells.append("—")
+                continue
             r = run_portfolio_backtest(
                 data, market_by_code, index_data, pd.Timestamp(start), pd.Timestamp(end) if end else today,
                 top_k=top_k, universe_top_n=top_n, shares=shares, **kwargs,
@@ -111,7 +114,7 @@ def main() -> None:
                     total=r.total_return_pct, cagr=r.cagr, mdd=r.mdd_pct, sharpe=r.sharpe_ratio,
                     trades=r.num_trades, stops=r.num_stopped_out, delisted_exits=len(gone),
                 )
-        print(f"{name:<34}" + "".join(f"{c:>24}" for c in cells), flush=True)
+        print(f"{name:<40}" + "".join(f"{c:>22}" for c in cells), flush=True)
 
     for name, data in [("[기준선] 시점기준 동일가중", price_data), ("[기준선] 현재상장만 동일가중", survivors_data)]:
         cells = []
@@ -123,18 +126,18 @@ def main() -> None:
             cells.append(f"{total:+8.1%} / {mdd:+6.1%}")
             if label == "전체" and "시점기준" in name:
                 curves["동일가중(시점기준)"] = eq
-        print(f"{name:<34}" + "".join(f"{c:>24}" for c in cells), flush=True)
+        print(f"{name:<40}" + "".join(f"{c:>22}" for c in cells), flush=True)
     cells = []
     for label, start, end in WINDOWS:
         kp = index_data["KOSPI"]
         kp = kp[(kp.index >= pd.Timestamp(start)) & (kp.index <= (pd.Timestamp(end) if end else today))]
         cells.append(f"{buy_and_hold_return_pct(kp):+8.1%}")
-    print(f"{'[기준선] 코스피 보유':<34}" + "".join(f"{c:>24}" for c in cells))
+    print(f"{'[기준선] 코스피 보유':<40}" + "".join(f"{c:>22}" for c in cells))
 
     print("\n전체 기간 상세:")
     for name, st in stats.items():
         sh = f"{st['sharpe']:.2f}" if st["sharpe"] is not None else "-"
-        print(f"  {name:<34} 수익 {st['total']:+.1%} CAGR {st['cagr']:+.1%} MDD {st['mdd']:+.1%} 샤프 {sh} "
+        print(f"  {name:<40} 수익 {st['total']:+.1%} CAGR {st['cagr']:+.1%} MDD {st['mdd']:+.1%} 샤프 {sh} "
               f"매매 {st['trades']}회 (손절 {st['stops']}회, 상장폐지로 청산 {st['delisted_exits']}회)")
 
     if export:

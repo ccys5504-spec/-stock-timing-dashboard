@@ -121,7 +121,8 @@ def run_v2_portfolio(held_codes: tuple[str, ...]) -> dict:
             logger.warning("v2 지수 조회 실패 %s: %s", code, e)
     regime = current_regime(index_data)
     held = set(held_codes)
-    table, as_of = build_target_portfolio(price_data, names, markets, held_codes=held, regime=regime)
+    marcap = dict(zip(universe["Code"], universe["Marcap"]))
+    table, as_of = build_target_portfolio(price_data, names, markets, held_codes=held, regime=regime, marcap=marcap)
     return {
         "table": table, "as_of": as_of, "regime": regime, "index_missing": [m for m in ("KOSPI", "KOSDAQ") if m not in index_data], "requested": len(universe), "loaded": len(price_data),
         "failed": [(c, names.get(c, c)) for c in sorted(failed)],

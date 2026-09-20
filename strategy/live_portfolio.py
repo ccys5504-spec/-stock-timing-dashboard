@@ -3,9 +3,9 @@
 백테스트 엔진(backtest/portfolio_engine.py)이 매월 말에 하는 일을 지금 시점 한 번만 한다:
   1) 후보 = 지금 시가총액 상위 100개(백테스트의 '그 시점 시총 상위 100개' 규칙과 같다. 호출하는
      쪽이 이미 상위 100개만 넘기므로 여기서 더 좁히지 않는다)
-  2) 그 안에서 3/6/12개월 상대강도(모멘텀) 순위
-  3) 이미 보유 중인 종목은 순위가 top_k의 2배 밖으로 밀려야 제외(순위 이력)
-  4) 변동성 역가중 비중(종목당 상한 12%)
+  2) 후보 정렬: 기본은 시가총액 큰 순(3종목 검증에서 모멘텀보다 훨씬 좋았음), ranking="momentum"이면 3/6/12개월 상대강도
+  3) 상위 top_k(기본 3)개. 이미 보유 중인 종목은 순위가 top_k의 2배 밖으로 밀려야 제외(순위 이력)
+  4) 변동성 역가중 비중(종목당 상한 = max(12%, 1.5/top_k))
   5) 참고용 초기 손절가 = 현재가 - 2.5 x ATR
 
 장세필터(지수 200일선 기준 총 투자비중 100/75/40/20%)는 백테스트 기본값과 같이 적용하고, ATR
@@ -15,11 +15,12 @@
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from backtest.portfolio_engine import (
     ATR_INITIAL_MULT, RANK_CUTOFF_MULTIPLE, TOP_K, inverse_vol_weights, regime_multiplier,
-    select_with_hysteresis,
+    select_with_hysteresis, weight_cap, DEFAULT_RANKING, reorder_candidates,
 )
 from signals.indicators import compute_atr
 from strategy.momentum import rank_universe
@@ -51,6 +52,8 @@ def build_target_portfolio(
     regime: dict[str, tuple[float, str]] | None = None,
     top_k: int = TOP_K,
     universe_top_n: int | None = UNIVERSE_TOP_N,
+    marcap: dict[str, float] | None = None,
+    ranking: str | None = None,
 ) -> tuple[pd.DataFrame, pd.Timestamp | None]:
     """(목표 포트폴리오 표, 기준일)을 돌려준다. 후보가 없으면 (빈 표, None).
 
@@ -68,8 +71,17 @@ def build_target_portfolio(
     if ranked.empty:
         return pd.DataFrame(), None
 
+    if ranking is None:  # 시가총액 정보가 있으면 기본(시총 순), 없으면 모멘텀
+        ranking = DEFAULT_RANKING if marcap else "momentum"
+    if ranking != "momentum":
+        # 시가총액 순 등 다른 기준: 시총은 (현재 시가총액 / 현재가) = 주식수 x 종가로 근사
+        implied_shares = {
+            c: (marcap[c] / float(price_data[c]["Close"].iloc[-1]))
+            for c in ranked["코드"] if marcap and c in marcap
+        }
+        ranked = reorder_candidates(ranked, ranking, price_data, as_of, implied_shares or None, np.random.default_rng(0))
     target_codes = select_with_hysteresis(ranked, top_k, top_k * RANK_CUTOFF_MULTIPLE, held_codes)
-    weights = inverse_vol_weights(target_codes, price_data, as_of)
+    weights = inverse_vol_weights(target_codes, price_data, as_of, max_weight=weight_cap(top_k))
     score_of = dict(zip(ranked["코드"], ranked["모멘텀점수"]))
     rank_of = {c: i + 1 for i, c in enumerate(ranked["코드"])}
 
