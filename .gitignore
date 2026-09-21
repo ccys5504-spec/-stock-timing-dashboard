@@ -3,6 +3,7 @@
 data/holdings.json
 data/watchlist.json
 data/settings.json
+data/trades.json
 
 # 파이썬
 __pycache__/
