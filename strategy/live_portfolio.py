@@ -25,6 +25,9 @@ from backtest.portfolio_engine import (
 from signals.indicators import compute_atr
 from strategy.momentum import rank_universe
 
+STATUS_NOT_HELD = "목표에 포함 (미보유)"
+STATUS_HELD = "목표에 포함 (보유 중)"
+
 UNIVERSE_TOP_N = None  # 넘겨받은 종목이 곧 후보(시가총액 상위 100개)
 
 REGIME_LABELS = {
@@ -59,7 +62,7 @@ def build_target_portfolio(
 
     표 컬럼: 순위, 종목코드, 종목명, 시장, 모멘텀(%), 목표비중(%), 현재가, 손절참고가, 상태
     목표비중은 변동성 역가중 비중 x 그 종목 시장의 장세 배율이라, 합계가 100% 미만이면 나머지는 현금.
-    상태: '신규 편입'(보유 안 함) / '유지'(이미 보유 중이고 계속 보유 대상)
+    상태: '목표에 포함 (미보유)' / '목표에 포함 (보유 중)' — 내 보유종목과 비교한 표시일 뿐 매수·매도 권유가 아니다.
     """
     held_codes = held_codes or set()
     latest_dates = [df.index[-1] for df in price_data.values() if len(df)]
@@ -100,7 +103,7 @@ def build_target_portfolio(
             "시장": markets.get(code, ""), "모멘텀(%)": round(score_of[code] * 100, 1),
             "목표비중(%)": round(weights[code] * exposure * 100, 1), "현재가": price,
             "손절참고가": round(stop) if stop is not None else None,
-            "상태": "유지" if code in held_codes else "신규 편입",
+            "상태": STATUS_HELD if code in held_codes else STATUS_NOT_HELD,
         })
     table = pd.DataFrame(rows).sort_values("순위").reset_index(drop=True)
     return table, as_of

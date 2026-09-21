@@ -1,6 +1,6 @@
 import pandas as pd
 
-from strategy.live_portfolio import build_target_portfolio, dropped_holdings
+from strategy.live_portfolio import STATUS_HELD, STATUS_NOT_HELD, build_target_portfolio, dropped_holdings
 from tests.helpers import make_ohlcv
 
 
@@ -22,7 +22,7 @@ def test_target_portfolio_shape_weights_and_stop_below_price():
     assert (table["목표비중(%)"] <= 12.0 + 1e-6).all() or len(table) < 9  # 종목 수가 적으면 상한이 못 지켜질 수 있음
     assert (table["손절참고가"] < table["현재가"]).all()
     assert table["순위"].is_monotonic_increasing
-    assert set(table["상태"]) == {"신규 편입"}
+    assert set(table["상태"]) == {STATUS_NOT_HELD}
 
 
 def test_holdings_are_kept_when_still_within_cutoff_and_reported_when_dropped():
@@ -31,7 +31,7 @@ def test_holdings_are_kept_when_still_within_cutoff_and_reported_when_dropped():
     keep = base["종목코드"].iloc[0]
     gone = "999999"  # 후보에 없는(시세가 없는) 보유 종목
     table, _ = build_target_portfolio(data, names, markets, held_codes={keep, gone}, top_k=10, universe_top_n=25)
-    assert table.loc[table["종목코드"] == keep, "상태"].iloc[0] == "유지"
+    assert table.loc[table["종목코드"] == keep, "상태"].iloc[0] == STATUS_HELD
     assert dropped_holdings(table, {keep, gone}, names) == [(gone, gone)]
 
 
