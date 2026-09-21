@@ -17,7 +17,6 @@ import requests
 _WATCHLIST_PATH = Path(__file__).parent / "watchlist.json"
 _HOLDINGS_PATH = Path(__file__).parent / "holdings.json"
 _SETTINGS_PATH = Path(__file__).parent / "settings.json"
-_TRADES_PATH = Path(__file__).parent / "trades.json"
 
 # ---- 관심종목/보유종목 저장 위치 ----
 # 2026-09-16: Streamlit Cloud는 코드가 재배포될 때마다(새 push든 수동
@@ -215,43 +214,6 @@ def save_holdings(holdings: list[dict]) -> None:
     if not _gist_write_file("holdings.json", json.dumps(holdings, ensure_ascii=False, indent=2)):
         _atomic_write_json(_HOLDINGS_PATH, holdings)
     _holdings_cache, _holdings_cache_at = list(holdings), time.monotonic()
-
-
-_trades_cache: list[dict] | None = None
-_trades_cache_at: float = 0.0
-
-
-def load_trades() -> list[dict]:
-    """매매 기록(일지)을 읽어온다 — 보유종목과 같은 방식(Gist 우선, 없으면 data/trades.json).
-
-    각 항목: {"날짜": "YYYY-MM-DD", "종목코드": str, "구분": "매수"|"매도", "수량": float,
-             "단가": float, "수수료세금": float}
-    이 앱은 증권사와 연동되어 있지 않으므로 전부 사용자가 직접 입력한 기록이다.
-    """
-    global _trades_cache, _trades_cache_at
-    now = time.monotonic()
-    if _trades_cache is not None and now - _trades_cache_at < _GIST_CACHE_TTL:
-        return list(_trades_cache)
-
-    content = _gist_read_file("trades.json")
-    if content is not None:
-        result = json.loads(content)
-    elif _TRADES_PATH.exists():
-        with open(_TRADES_PATH, encoding="utf-8") as f:
-            result = json.load(f)
-    else:
-        result = []
-
-    _trades_cache, _trades_cache_at = result, now
-    return list(result)
-
-
-def save_trades(trades: list[dict]) -> None:
-    """매매 기록을 저장한다 (Gist가 설정돼 있으면 Gist에, 아니면 로컬 파일에)."""
-    global _trades_cache, _trades_cache_at
-    if not _gist_write_file("trades.json", json.dumps(trades, ensure_ascii=False, indent=2)):
-        _atomic_write_json(_TRADES_PATH, trades)
-    _trades_cache, _trades_cache_at = list(trades), time.monotonic()
 
 
 # 사이드바 "설정" 메뉴의 기본값. 2026-09-18: 예전엔 새로고침/재배포될 때마다

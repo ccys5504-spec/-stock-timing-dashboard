@@ -17,7 +17,6 @@ import streamlit as st
 from core import (
     PERIOD_OPTIONS,
     VIEW_HOLDINGS,
-    VIEW_JOURNAL,
     VIEW_OPS_NOTES,
     VIEW_PORTFOLIO_V2,
     VIEW_SCREENER,
@@ -26,7 +25,7 @@ from core import (
     Settings,
 )
 from data.fetch import load_settings, load_watchlist, save_settings
-from views import holdings, journal, ops_notes, portfolio_v2, screener, single_stock
+from views import holdings, ops_notes, portfolio_v2, screener, single_stock
 
 st.set_page_config(page_title="주식 매매 타이밍 분석", layout="wide")
 
@@ -185,8 +184,6 @@ if active_view == VIEW_SINGLE_STOCK:
     single_stock.render(WATCHLIST, years, settings)
 elif active_view == VIEW_SCREENER:
     screener.render(WATCHLIST, years, settings)
-elif active_view == VIEW_JOURNAL:
-    journal.render()
 elif active_view == VIEW_HOLDINGS:
     holdings.render(years, settings)
 elif active_view == VIEW_PORTFOLIO_V2:

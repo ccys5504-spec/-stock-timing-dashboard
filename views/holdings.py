@@ -6,16 +6,13 @@
 """
 from __future__ import annotations
 
-import datetime as dt
-
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from backtest.engine import buy_and_hold_return_pct, run_backtest
 from core import Settings, prepare
-from data.fetch import load_holdings, load_trades, resolve_stock_name, save_holdings, save_trades
-from strategy.journal import SELL, JournalError, opening_buy_for_sell, realized_pnl
+from data.fetch import load_holdings, resolve_stock_name, save_holdings
 from views.order_link import render_order_link
 
 
@@ -63,8 +60,6 @@ def render(years: int, settings: Settings) -> None:
     if not saved_holdings:
         st.caption("아직 입력된 보유종목이 없습니다. 위 표에 입력 후 저장을 눌러주세요.")
         st.stop()
-
-    _render_sell_complete(saved_holdings)
 
     st.divider()
     st.subheader("현재 상태")
@@ -155,52 +150,6 @@ def render(years: int, settings: Settings) -> None:
 
     st.divider()
     _render_strategy_comparison(saved_holdings, years, settings)
-
-
-def _render_sell_complete(saved_holdings: list[dict]) -> None:
-    """종목마다 '매도 완료(삭제)' 버튼 — 누르면 보유종목에서 지우고 저장한다.
-
-    매도가를 넣으면 매매 기록(📒 메뉴)에도 매도로 남겨서 실현손익·일일 수익률에 반영한다.
-    이 앱은 증권사와 연동되지 않아서, 실제 매도는 키움에서 직접 한 뒤 여기서 정리하는 용도다.
-    """
-    st.subheader("✅ 매도 완료 처리")
-    st.caption(
-        "키움에서 실제로 매도한 종목은 여기서 정리하세요. 매도가를 입력하면 매매 기록에도 남아 "
-        "'📒 매매 기록·수익률' 메뉴의 실현손익·일일 수익률에 반영됩니다(0이면 삭제만 합니다)."
-    )
-    for h in saved_holdings:
-        code = str(h.get("종목코드", "")).strip().zfill(6)
-        qty = float(h.get("수량") or 0)
-        cost = float(h.get("매입단가") or 0)
-        if not code or qty <= 0:
-            continue
-        name = resolve_stock_name(code) or code
-        c1, c2, c3 = st.columns([2.2, 1.6, 1.4])
-        c1.markdown(f"**{name}** ({code}) · {qty:g}주 · 매입 {cost:,.0f}원")
-        price = c2.number_input("매도가(원)", min_value=0.0, step=100.0, format="%g", value=0.0,
-                                key=f"sellpx_{code}", label_visibility="collapsed",
-                                help="체결된 매도 단가. 0이면 기록 없이 삭제만 합니다.")
-        if c3.button("매도 완료(삭제)", key=f"sellbtn_{code}", use_container_width=True):
-            if price > 0:
-                trades = load_trades()
-                today = dt.date.today().isoformat()
-                added = []
-                opening = opening_buy_for_sell(trades, load_holdings(), code, qty, today)
-                if opening:
-                    added.append(opening)  # 기록에 매수 이력이 없으면 매입단가로 기초 매수를 함께 남긴다
-                added.append({"날짜": today, "종목코드": code, "구분": SELL, "수량": qty,
-                              "단가": price, "수수료세금": 0.0})
-                try:
-                    realized_pnl(trades + added)
-                except JournalError as e:
-                    st.error(str(e))
-                    st.stop()
-                save_trades(trades + added)
-            remaining = [x for x in load_holdings()
-                         if str(x.get("종목코드", "")).strip().zfill(6) != code]
-            save_holdings(remaining)
-            st.success(f"{name}을(를) 보유종목에서 삭제했습니다." + (" 매도 기록도 남겼습니다." if price > 0 else ""))
-            st.rerun()
 
 
 def _render_strategy_comparison(saved_holdings: list[dict], years: int, settings: Settings) -> None:
