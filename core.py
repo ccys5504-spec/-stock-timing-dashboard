@@ -30,11 +30,12 @@ PERIOD_OPTIONS = {"1년": 1, "3년": 3, "5년": 5}
 # 단일 종목 분석으로 이동"하던 게 다른 탭으로 잘못 이동). 이제는 이름으로
 # 가리키므로 VIEWS의 순서를 바꿔도(= 이 리스트의 나열 순서만) 안전하다.
 VIEW_HOLDINGS = "💼 내 보유종목"
+VIEW_JOURNAL = "📒 매매 기록·수익률"
 VIEW_SINGLE_STOCK = "🔍 단일 종목 분석"
 VIEW_SCREENER = "🧭 종목 추천(스크리너)"
 VIEW_PORTFOLIO_V2 = "🧺 포트폴리오(v2·실험)"
 VIEW_OPS_NOTES = "📋 운영 노트"
-VIEWS = [VIEW_HOLDINGS, VIEW_SINGLE_STOCK, VIEW_SCREENER, VIEW_PORTFOLIO_V2, VIEW_OPS_NOTES]
+VIEWS = [VIEW_HOLDINGS, VIEW_JOURNAL, VIEW_SINGLE_STOCK, VIEW_SCREENER, VIEW_PORTFOLIO_V2, VIEW_OPS_NOTES]
 
 CHART_TIMEFRAMES = {"일봉": None, "주봉": "W", "월봉": "ME", "년봉": "YE"}
 
