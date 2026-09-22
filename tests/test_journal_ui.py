@@ -30,6 +30,8 @@ def store(monkeypatch):
     idx = pd.bdate_range(dt.date.today() - dt.timedelta(days=20), dt.date.today())
     monkeypatch.setattr(journal_view, "_closes", lambda code, start: pd.Series(
         [70000 + 100 * i for i in range(len(idx))], index=idx, dtype=float))
+    # '매도 완료' 행의 현재가 참고값 — 네트워크 조회 없이 고정값으로 (72,000원, 매입가 70,000원보다 위)
+    monkeypatch.setattr(holdings_view, "_current_price", lambda code: 72000.0)
     return s
 
 
@@ -48,17 +50,38 @@ def test_sell_complete_with_price_deletes_holding_and_records_trades(store):
     assert not at.exception
     at.number_input(key="sellpx_005930").set_value(75000).run()
     at.button(key="sellbtn_005930").click().run()
+    assert store.holdings != []  # 1차 클릭은 삭제하지 않고 확인 단계만 띄운다
+    at.button(key="sellconfirm_005930").click().run()
     assert not at.exception
-    assert store.holdings == []  # 보유종목에서 삭제·저장됨
+    assert store.holdings == []  # 2차(확인) 클릭에서야 보유종목에서 삭제·저장됨
     sides = [(t["구분"], t["수량"], t["단가"]) for t in store.trades]
     # 매수 이력이 없어 보유종목의 매입단가로 기초 매수가 함께 남고, 이어서 전량 매도가 남는다
     assert sides == [("매수", 10, 70000), ("매도", 10, 75000)]
 
 
+def test_sell_complete_prefills_current_price(store):
+    at = AppTest.from_function(_sell_app).run()
+    assert at.number_input(key="sellpx_005930").value == 72000.0  # 현재가가 기본값으로 채워짐
+    assert "현재가 72,000원" in "".join(m.value for m in at.markdown)
+
+
 def test_sell_complete_without_price_only_deletes(store):
     at = AppTest.from_function(_sell_app).run()
+    at.number_input(key="sellpx_005930").set_value(0).run()  # 현재가가 기본값이라 0으로 직접 바꿔야 기록 없이 삭제만 된다
     at.button(key="sellbtn_005930").click().run()
+    at.button(key="sellconfirm_005930").click().run()
     assert store.holdings == [] and store.trades == []
+
+
+def test_sell_complete_cancel_does_not_delete(store):
+    at = AppTest.from_function(_sell_app).run()
+    at.number_input(key="sellpx_005930").set_value(75000).run()
+    at.button(key="sellbtn_005930").click().run()
+    assert at.warning  # 확인 경고 문구가 표시됨
+    at.button(key="sellcancel_005930").click().run()
+    assert not at.exception
+    assert store.holdings != [] and store.trades == []  # 취소하면 아무것도 지워지지 않는다
+    assert at.button(key="sellbtn_005930")  # 원래 버튼 행으로 돌아온다
 
 
 def test_journal_form_records_trade_and_syncs_holdings(store):
