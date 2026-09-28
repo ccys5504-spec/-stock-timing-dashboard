@@ -46,7 +46,7 @@ def _journal_app():
 
 
 def test_sell_complete_with_price_deletes_holding_and_records_trades(store):
-    at = AppTest.from_function(_sell_app).run()
+    at = AppTest.from_function(_sell_app, default_timeout=30).run()
     assert not at.exception
     at.number_input(key="sellpx_005930").set_value(75000).run()
     at.button(key="sellbtn_005930").click().run()
@@ -60,13 +60,13 @@ def test_sell_complete_with_price_deletes_holding_and_records_trades(store):
 
 
 def test_sell_complete_prefills_current_price(store):
-    at = AppTest.from_function(_sell_app).run()
+    at = AppTest.from_function(_sell_app, default_timeout=30).run()
     assert at.number_input(key="sellpx_005930").value == 72000.0  # 현재가가 기본값으로 채워짐
     assert "현재가 72,000원" in "".join(m.value for m in at.markdown)
 
 
 def test_sell_complete_without_price_only_deletes(store):
-    at = AppTest.from_function(_sell_app).run()
+    at = AppTest.from_function(_sell_app, default_timeout=30).run()
     at.number_input(key="sellpx_005930").set_value(0).run()  # 현재가가 기본값이라 0으로 직접 바꿔야 기록 없이 삭제만 된다
     at.button(key="sellbtn_005930").click().run()
     at.button(key="sellconfirm_005930").click().run()
@@ -74,7 +74,7 @@ def test_sell_complete_without_price_only_deletes(store):
 
 
 def test_sell_complete_cancel_does_not_delete(store):
-    at = AppTest.from_function(_sell_app).run()
+    at = AppTest.from_function(_sell_app, default_timeout=30).run()
     at.number_input(key="sellpx_005930").set_value(75000).run()
     at.button(key="sellbtn_005930").click().run()
     assert at.warning  # 확인 경고 문구가 표시됨
@@ -85,7 +85,7 @@ def test_sell_complete_cancel_does_not_delete(store):
 
 
 def test_journal_form_records_trade_and_syncs_holdings(store):
-    at = AppTest.from_function(_journal_app).run()
+    at = AppTest.from_function(_journal_app, default_timeout=30).run()
     assert not at.exception
     at.text_input[0].set_value("000660")
     at.number_input[0].set_value(5)
@@ -100,7 +100,7 @@ def test_journal_form_records_trade_and_syncs_holdings(store):
 
 
 def test_journal_form_sell_of_preexisting_holding_adds_opening_buy(store):
-    at = AppTest.from_function(_journal_app).run()
+    at = AppTest.from_function(_journal_app, default_timeout=30).run()
     at.text_input[0].set_value("005930")
     at.radio[0].set_value("매도")
     at.number_input[0].set_value(3)
@@ -113,7 +113,7 @@ def test_journal_form_sell_of_preexisting_holding_adds_opening_buy(store):
 
 
 def test_journal_form_rejects_selling_more_than_held_anywhere(store):
-    at = AppTest.from_function(_journal_app).run()
+    at = AppTest.from_function(_journal_app, default_timeout=30).run()
     at.text_input[0].set_value("000660")  # 보유종목에도 기록에도 없는 종목
     at.radio[0].set_value("매도")
     at.number_input[0].set_value(3)

@@ -20,7 +20,7 @@ import pandas as pd
 from data.fetch import fetch_ohlcv
 from signals.indicators import build_signals
 
-MAX_WORKERS = 8
+MAX_WORKERS = 12  # 300종목 스캔을 위해 8 -> 12 (12개 병렬로 2,775종목을 받았을 때 실패 0건)
 logger = logging.getLogger(__name__)
 
 
