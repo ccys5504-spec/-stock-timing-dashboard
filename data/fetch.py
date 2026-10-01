@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import functools
+import io
 import json
 import logging
 import os
@@ -305,17 +306,53 @@ def save_settings(settings: dict) -> None:
     _settings_cache, _settings_cache_at = dict(settings), time.monotonic()
 
 
+# fdr.StockListing("KRX")는 내부적으로 실제 종목 데이터를 이 GitHub 저장소(FinanceDataReader
+# 프로젝트가 매일 모아두는 캐시)에서 가져오는데, 그러기 전에 "오늘 날짜가 며칠이냐"를 알아보려고
+# data.krx.co.kr의 작은 bld 리소스 엔드포인트를 먼저 호출한다. 2026-10-01에 Streamlit Cloud에서
+# 바로 이 호출이 매번 `ValueError: Failed to load data from http://data.krx.co.kr/...`로 죽는 걸
+# 실제로 확인했다 — KRX 쪽 원본 데이터는 멀쩡한데, "날짜를 물어보는" 사소한 단계 하나가 Cloud에서
+# 막혀서 전체가 실패한 것이다. 그 질문의 답(가장 최근 날짜)은 GitHub API로 이 저장소 디렉터리를
+# 나열해서도 구할 수 있으므로, data.krx.co.kr를 아예 거치지 않고 직접 받는다.
+_KRX_LISTING_CACHE_API = "https://api.github.com/repos/FinanceData/fdr_krx_data_cache/contents/data/listing/krx"
+_KRX_LISTING_CACHE_RAW = (
+    "https://raw.githubusercontent.com/FinanceData/fdr_krx_data_cache/refs/heads/master/data/listing/krx/{}"
+)
+
+
+def _fetch_krx_listing_from_github_cache() -> pd.DataFrame:
+    """fdr.StockListing("KRX")와 같은 형식(Code/Name/Market/Dept/Marcap 등)의 DataFrame을
+    data.krx.co.kr를 거치지 않고 GitHub 캐시에서 직접 받는다. 실패하면 그대로 예외를 던진다."""
+    r = requests.get(_KRX_LISTING_CACHE_API, timeout=15)
+    r.raise_for_status()
+    names = sorted(x["name"] for x in r.json() if isinstance(x, dict) and x.get("name", "").endswith(".csv"))
+    if not names:
+        raise ValueError("KRX 종목 목록 캐시 저장소(GitHub)에서 파일을 찾지 못했습니다.")
+    raw = requests.get(_KRX_LISTING_CACHE_RAW.format(names[-1]), timeout=30)
+    raw.raise_for_status()
+    df = pd.read_csv(
+        io.StringIO(raw.text), index_col=0,
+        dtype={"Code": str, "Dept": str, "ChangeCode": str, "MarketId": str},
+    )
+    return df.reset_index(drop=True)
+
+
 @functools.lru_cache(maxsize=1)
 def _full_krx_listing() -> pd.DataFrame:
     """전체 KRX 종목 목록을 한 번만 받아와 캐싱한다 — 종목명 조회(resolve_stock_name)와
     시가총액 상위 N개 선정(get_universe) 양쪽이 이 캐시를 함께 쓴다(2026-10-01: 예전에는
-    get_universe가 이 캐시를 안 쓰고 매번 새로 fdr.StockListing("KRX")를 불러서, 네트워크가
-    한 번만 흔들려도 "오늘의 추천" 300종목 스캔 전체가 바로 실패했다).
+    get_universe가 이 캐시를 안 쓰고 매번 새로 조회를 불러서, 조회가 한 번만 흔들려도
+    "오늘의 추천" 300종목 스캔 전체가 바로 실패했다).
 
-    이 단일 호출 하나가 KRX 쪽 일시적인 오류에 흔들리기 쉬워서(종목 하나가 아니라 전체가
-    걸림) 최대 3번, 짧게 간격을 두고 재시도한다. lru_cache는 예외를 캐싱하지 않으므로 전부
-    실패해도 다음 호출에서 다시 시도된다.
+    1순위는 GitHub 캐시 직접 조회(위 설명 참고 — data.krx.co.kr보다 Cloud에서 더 안정적임을
+    확인함). 그마저 실패하면(GitHub 저장소 구조가 바뀌는 등) FinanceDataReader의 기본 경로로
+    최대 3번, 짧게 간격을 두고 재시도한다. lru_cache는 예외를 캐싱하지 않으므로 둘 다 실패해도
+    다음 호출에서 처음부터 다시 시도된다.
     """
+    try:
+        return _fetch_krx_listing_from_github_cache()
+    except Exception as e:  # noqa: BLE001 — GitHub 캐시가 안 되면 FDR 기본 경로로 넘어간다
+        logger.warning("GitHub 캐시로 KRX 종목 목록 조회 실패, 기본 경로로 재시도: %s: %s", type(e).__name__, e)
+
     last_err: Exception | None = None
     for attempt in range(3):
         try:
