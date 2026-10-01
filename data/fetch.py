@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import functools
 import json
+import logging
 import os
 import tempfile
 import time
@@ -13,6 +14,8 @@ from pathlib import Path
 import FinanceDataReader as fdr
 import pandas as pd
 import requests
+
+logger = logging.getLogger(__name__)
 
 _WATCHLIST_PATH = Path(__file__).parent / "watchlist.json"
 _HOLDINGS_PATH = Path(__file__).parent / "holdings.json"
@@ -304,8 +307,25 @@ def save_settings(settings: dict) -> None:
 
 @functools.lru_cache(maxsize=1)
 def _full_krx_listing() -> pd.DataFrame:
-    """전체 KRX 종목 목록(코드 -> 종목명 조회용)을 한 번만 받아와 캐싱한다."""
-    return fdr.StockListing("KRX")
+    """전체 KRX 종목 목록을 한 번만 받아와 캐싱한다 — 종목명 조회(resolve_stock_name)와
+    시가총액 상위 N개 선정(get_universe) 양쪽이 이 캐시를 함께 쓴다(2026-10-01: 예전에는
+    get_universe가 이 캐시를 안 쓰고 매번 새로 fdr.StockListing("KRX")를 불러서, 네트워크가
+    한 번만 흔들려도 "오늘의 추천" 300종목 스캔 전체가 바로 실패했다).
+
+    이 단일 호출 하나가 KRX 쪽 일시적인 오류에 흔들리기 쉬워서(종목 하나가 아니라 전체가
+    걸림) 최대 3번, 짧게 간격을 두고 재시도한다. lru_cache는 예외를 캐싱하지 않으므로 전부
+    실패해도 다음 호출에서 다시 시도된다.
+    """
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            return fdr.StockListing("KRX")
+        except Exception as e:  # noqa: BLE001 — 재시도 끝에도 실패하면 호출부가 처리하도록 다시 던진다
+            last_err = e
+            logger.warning("KRX 종목 목록 조회 실패(%d/3번째 시도): %s: %s", attempt + 1, type(e).__name__, e)
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+    raise last_err
 
 
 def resolve_stock_name(code: str) -> str | None:
@@ -349,7 +369,7 @@ def get_universe(
     """
     import re
 
-    listing = fdr.StockListing("KRX")
+    listing = _full_krx_listing()
     listing = listing[listing["Market"].isin(markets)].copy()
 
     # 우선주 제외 (종목명이 '...우', '...우B', '...2우B' 등으로 끝남)

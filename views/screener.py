@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 
 import pandas as pd
 import streamlit as st
@@ -15,6 +16,7 @@ from core import VIEW_SINGLE_STOCK, Settings, prepare, run_screener, to_csv_byte
 from data.fetch import save_watchlist
 from views.order_link import render_order_link
 
+logger = logging.getLogger(__name__)
 
 TODAY_PICK_UNIVERSE = 300  # "오늘의 추천"이 훑어보는 시가총액 상위 종목 수 (고정, KOSPI+KOSDAQ)
 FAILURE_WARN_RATIO = 0.05  # 실패 종목이 이 비율 이상이면 눈에 띄는 경고로 표시
@@ -63,8 +65,14 @@ def _run_today_scan(settings: Settings) -> pd.DataFrame | None:
                 ["KOSPI", "KOSDAQ"], TODAY_PICK_UNIVERSE,
                 settings.threshold, settings.volume_filter_mode, settings.volume_multiplier,
             )
-        except Exception:  # noqa: BLE001
-            st.warning("오늘의 추천을 계산하지 못했습니다(데이터 조회 실패). 잠시 뒤 '다시 스캔'을 눌러주세요.")
+        except Exception as e:  # noqa: BLE001 — 종목별 실패가 아니라 유니버스 조회(KRX 전체 목록) 자체가
+            # 막혔을 때 여기로 떨어진다. 예전에는 "데이터 조회 실패"로만 뭉뚱그려서 원인을 알 수 없었다
+            # (2026-10-01, Cloud에서 실제로 겪음) — 이제 원인을 화면과 로그에 함께 남긴다.
+            logger.warning("오늘의 추천 스캔 실패: %s: %s", type(e).__name__, e)
+            st.warning(
+                f"오늘의 추천을 계산하지 못했습니다(데이터 조회 실패: {type(e).__name__}: {e}). "
+                "보통 일시적인 네트워크 문제이니 '다시 스캔'을 눌러보세요."
+            )
             _render_rescan_button()
             return None
 
