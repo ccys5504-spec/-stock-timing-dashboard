@@ -21,7 +21,7 @@ from strategy.journal import (
 )
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)  # 30분(시세 보관 시간을 core.load_data와 맞춤)
 def _closes(code: str, start: str) -> pd.Series:
     df = fetch_ohlcv_range(code, start, dt.date.today().isoformat(), warmup_days=10)
     return df["Close"]

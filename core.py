@@ -59,7 +59,8 @@ class Settings:
     adaptive_exit: bool
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+# 시세 보관 시간 30분(2026-10-08: 1시간 -> 30분, 스캔·v2 목표와 맞춤). 장중에 보면 최대 30분 전 값이다.
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_data(code: str, years: int) -> pd.DataFrame:
     return fetch_ohlcv(code, years=years)
 
