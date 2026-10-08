@@ -181,15 +181,40 @@ active_view = st.radio(
     "보기 선택", VIEWS, key="active_view", horizontal=True, label_visibility="collapsed"
 )
 
+# ---- 자동 새로고침 ----
+# 2026-10-08: 화면을 열어둔 채로 두면 일정 시간마다 지금 보고 있는 탭의 숫자를 스스로 다시 계산한다.
+# 시세 보관 시간(30분)보다 조금 길게(31분) 잡아서, 타이머가 돌 때마다 보관분이 이미 만료돼 있어 항상 새 값을
+# 받는다. st.fragment(run_every=...)는 '그 탭 내용'만 다시 그리므로 사이드바 설정이나 선택한 탭은 그대로다.
+# 한계: 브라우저에 이 앱이 열려 있을 때만 동작한다(탭을 닫거나 컴퓨터가 잠들면 멈춤 — 서버가 혼자 돌지는 않음).
+AUTO_REFRESH_SECONDS = 31 * 60
+
+with st.sidebar:
+    auto_refresh = st.checkbox(
+        "자동 새로고침 (31분마다)", value=True, key="auto_refresh",
+        help="이 앱을 열어둔 동안 지금 보고 있는 탭의 시세·평가손익을 31분마다 자동으로 다시 계산합니다. "
+             "브라우저에 앱이 열려 있을 때만 동작하고, 오늘의 추천 탭은 300종목을 다시 스캔하느라 1분쯤 걸립니다.",
+    )
+
+
+def _render_view(render_fn, *args) -> None:
+    """탭 내용을 그리되, 자동 새로고침이 켜져 있으면 31분마다 그 부분만 다시 실행한다."""
+
+    @st.fragment(run_every=AUTO_REFRESH_SECONDS if auto_refresh else None)
+    def _view():
+        render_fn(*args)
+
+    _view()
+
+
 if active_view == VIEW_SINGLE_STOCK:
-    single_stock.render(WATCHLIST, years, settings)
+    _render_view(single_stock.render, WATCHLIST, years, settings)
 elif active_view == VIEW_SCREENER:
-    screener.render(WATCHLIST, years, settings)
+    _render_view(screener.render, WATCHLIST, years, settings)
 elif active_view == VIEW_JOURNAL:
-    journal.render()
+    _render_view(journal.render)
 elif active_view == VIEW_HOLDINGS:
-    holdings.render(years, settings)
+    _render_view(holdings.render, years, settings)
 elif active_view == VIEW_PORTFOLIO_V2:
-    portfolio_v2.render()
+    _render_view(portfolio_v2.render)
 elif active_view == VIEW_OPS_NOTES:
     ops_notes.render()
