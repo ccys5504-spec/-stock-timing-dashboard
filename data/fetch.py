@@ -336,17 +336,12 @@ def _fetch_krx_listing_from_github_cache() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-@functools.lru_cache(maxsize=1)
-def _full_krx_listing() -> pd.DataFrame:
-    """전체 KRX 종목 목록을 한 번만 받아와 캐싱한다 — 종목명 조회(resolve_stock_name)와
-    시가총액 상위 N개 선정(get_universe) 양쪽이 이 캐시를 함께 쓴다(2026-10-01: 예전에는
-    get_universe가 이 캐시를 안 쓰고 매번 새로 조회를 불러서, 조회가 한 번만 흔들려도
-    "오늘의 추천" 300종목 스캔 전체가 바로 실패했다).
+def _load_krx_listing() -> pd.DataFrame:
+    """KRX 종목 목록을 새로 받아온다(캐시 없음).
 
     1순위는 GitHub 캐시 직접 조회(위 설명 참고 — data.krx.co.kr보다 Cloud에서 더 안정적임을
     확인함). 그마저 실패하면(GitHub 저장소 구조가 바뀌는 등) FinanceDataReader의 기본 경로로
-    최대 3번, 짧게 간격을 두고 재시도한다. lru_cache는 예외를 캐싱하지 않으므로 둘 다 실패해도
-    다음 호출에서 처음부터 다시 시도된다.
+    최대 3번, 짧게 간격을 두고 재시도한다. 둘 다 실패하면 마지막 예외를 던진다.
     """
     try:
         return _fetch_krx_listing_from_github_cache()
@@ -363,6 +358,53 @@ def _full_krx_listing() -> pd.DataFrame:
             if attempt < 2:
                 time.sleep(1.5 * (attempt + 1))
     raise last_err
+
+
+# 종목 목록(종목명·시가총액·시총 상위 N개 선정의 근거)을 몇 시간까지 재사용할지. 예전에는 프로세스가
+# 살아있는 동안 영원히 재사용(lru_cache)했는데, Cloud 앱은 며칠씩 켜져 있을 수 있어서 "오늘의 추천"
+# 후보와 v2 시총 순위가 며칠 전 목록으로 계산될 수 있었다(2026-10-08 확인 후 수정). 원본(GitHub 캐시)이
+# 하루 한 번 갱신되므로 6시간이면 충분하다.
+_KRX_LISTING_TTL = 6 * 3600
+_krx_listing_cache: tuple[float, pd.DataFrame] | None = None
+
+
+def _clock() -> float:
+    return time.monotonic()
+
+
+def _full_krx_listing() -> pd.DataFrame:
+    """전체 KRX 종목 목록 — 종목명 조회(resolve_stock_name)와 시가총액 상위 N개 선정(get_universe)
+    양쪽이 이 캐시를 함께 쓴다(2026-10-01: 예전에는 get_universe가 이 캐시를 안 쓰고 매번 새로
+    조회를 불러서, 조회가 한 번만 흔들려도 "오늘의 추천" 300종목 스캔 전체가 바로 실패했다).
+
+    _KRX_LISTING_TTL(6시간)이 지나면 새로 받아온다. 새로 받는 데 실패했는데 이전 목록이 남아 있으면
+    그 목록을 그대로 쓴다(조금 오래된 목록이 "전체 실패"보다 낫다). 처음부터 실패하면 예외를 던지고,
+    예외는 캐시하지 않으므로 다음 호출에서 처음부터 다시 시도한다.
+    """
+    global _krx_listing_cache
+    now = _clock()
+    if _krx_listing_cache is not None and now - _krx_listing_cache[0] < _KRX_LISTING_TTL:
+        return _krx_listing_cache[1]
+    try:
+        df = _load_krx_listing()
+    except Exception as e:  # noqa: BLE001
+        if _krx_listing_cache is None:
+            raise
+        logger.warning("KRX 종목 목록 갱신 실패, 이전 목록을 계속 사용합니다: %s: %s", type(e).__name__, e)
+        # 화면을 열 때마다 느린 재시도를 반복하지 않도록, 10분 뒤에 다시 갱신을 시도하게 시각을 조정한다
+        stale = _krx_listing_cache[1]
+        _krx_listing_cache = (now - _KRX_LISTING_TTL + 600, stale)
+        return stale
+    _krx_listing_cache = (now, df)
+    return df
+
+
+def _clear_krx_listing_cache() -> None:
+    global _krx_listing_cache
+    _krx_listing_cache = None
+
+
+_full_krx_listing.cache_clear = _clear_krx_listing_cache  # 예전 lru_cache와 같은 이름(테스트 호환)
 
 
 def resolve_stock_name(code: str) -> str | None:

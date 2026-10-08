@@ -135,3 +135,51 @@ def test_listing_fetch_raises_original_error_after_exhausting_retries(monkeypatc
     # (resolve_stock_name은 실패를 삼키고 None을 돌려주는 쪽이라 그 경로로 "다시 시도했는지"를 확인한다)
     assert fetch.resolve_stock_name("000001") is None
     assert calls["n"] == 6  # 두 번째 요청도 다시 3번을 전부 시도했다(이전 실패가 캐싱되지 않음)
+
+
+# ---- 목록 재사용 기간(TTL) ---------------------------------------------------------------
+
+def _install_clock(monkeypatch, start=1000.0):
+    state = {"t": start}
+    monkeypatch.setattr(fetch, "_clock", lambda: state["t"])
+    return state
+
+
+def test_listing_is_reused_within_ttl_and_refreshed_after_it(monkeypatch):
+    clock = _install_clock(monkeypatch)
+    loads = {"n": 0}
+
+    def fake_load():
+        loads["n"] += 1
+        return _fake_listing().assign(Marcap=[300 * loads["n"], 200, 100])
+
+    monkeypatch.setattr(fetch, "_load_krx_listing", fake_load)
+    first = fetch._full_krx_listing()
+    clock["t"] += fetch._KRX_LISTING_TTL - 1
+    assert fetch._full_krx_listing() is first and loads["n"] == 1  # TTL 안에서는 재사용
+    clock["t"] += 2
+    refreshed = fetch._full_krx_listing()
+    assert loads["n"] == 2 and refreshed["Marcap"].iloc[0] == 600  # TTL이 지나면 새 목록
+
+
+def test_failed_refresh_keeps_serving_the_previous_listing_and_backs_off(monkeypatch):
+    clock = _install_clock(monkeypatch)
+    state = {"fail": False, "n": 0}
+
+    def fake_load():
+        state["n"] += 1
+        if state["fail"]:
+            raise ConnectionError("갱신 실패")
+        return _fake_listing()
+
+    monkeypatch.setattr(fetch, "_load_krx_listing", fake_load)
+    first = fetch._full_krx_listing()
+    clock["t"] += fetch._KRX_LISTING_TTL + 1
+    state["fail"] = True
+    assert fetch._full_krx_listing() is first  # 갱신에 실패해도 이전 목록으로 계속 동작
+    calls_after_failure = state["n"]
+    clock["t"] += 60
+    assert fetch._full_krx_listing() is first and state["n"] == calls_after_failure  # 곧바로 또 재시도하지 않는다
+    clock["t"] += 600
+    state["fail"] = False
+    assert fetch._full_krx_listing() is not first  # 10분 뒤에는 다시 갱신을 시도해 성공
