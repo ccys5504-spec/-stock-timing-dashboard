@@ -6,16 +6,13 @@
 """
 from __future__ import annotations
 
-import datetime as dt
-
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from backtest.engine import buy_and_hold_return_pct, run_backtest
 from core import Settings, load_data, prepare
-from data.fetch import load_holdings, load_trades, resolve_stock_name, save_holdings, save_trades
-from strategy.journal import SELL, JournalError, opening_buy_for_sell, realized_pnl
+from data.fetch import load_holdings, resolve_stock_name, save_holdings
 from views.order_link import render_order_link
 
 
@@ -158,7 +155,7 @@ def render(years: int, settings: Settings) -> None:
 
 
 def _current_price(code: str) -> float | None:
-    """이 종목의 가장 최근 종가. core.load_data가 1시간 캐싱하므로 아래 '현재 상태' 표와 같은 값을 쓴다."""
+    """이 종목의 가장 최근 종가. core.load_data가 30분 보관하므로 아래 '현재 상태' 표와 같은 값을 쓴다."""
     try:
         df = load_data(code, 1)
     except Exception:  # noqa: BLE001 — 조회 실패 시 참고가만 없이 넘어간다(삭제 자체는 계속 가능해야 함)
@@ -167,17 +164,16 @@ def _current_price(code: str) -> float | None:
 
 
 def _render_sell_complete(saved_holdings: list[dict]) -> None:
-    """종목마다 '매도 완료(삭제)' 버튼 — 누르면 보유종목에서 지우고 저장한다.
+    """종목마다 '매도 완료(삭제)' 버튼 — 누르면(한 번 더 확인 후) 보유종목에서 지우고 저장한다.
 
-    매도가를 넣으면 매매 기록(📒 메뉴)에도 매도로 남겨서 실현손익·일일 수익률에 반영한다.
     이 앱은 증권사와 연동되지 않아서, 실제 매도는 키움에서 직접 한 뒤 여기서 정리하는 용도다.
-    매도가 입력칸은 참고용으로 현재가를 기본값으로 채워두되, 실제 체결가와 다르면 직접 고칠 수 있다.
+    (2026-10-16: 예전에는 매도가를 입력하면 '매매 기록·수익률' 탭에 기록을 남겼는데, 그 탭을 없애서
+    매도가 입력과 기록 저장도 함께 없앴다. 각 행의 현재가·평가손익률 표시는 그대로 둔다.)
     """
     st.subheader("✅ 매도 완료 처리")
     st.caption(
-        "키움에서 실제로 매도한 종목은 여기서 정리하세요. 매도가는 참고용으로 현재가가 기본 입력되어 있고, "
-        "실제 체결가로 바꿀 수 있습니다. 매도가를 입력하면 매매 기록에도 남아 "
-        "'📒 매매 기록·수익률' 메뉴의 실현손익·일일 수익률에 반영됩니다(0이면 삭제만 합니다)."
+        "키움에서 실제로 매도한 종목은 여기서 정리하세요. 버튼을 누르면 한 번 더 확인한 뒤 보유종목 표에서 "
+        "삭제합니다(매매 내역은 따로 저장하지 않습니다)."
     )
     for h in saved_holdings:
         code = str(h.get("종목코드", "")).strip().zfill(6)
@@ -188,43 +184,24 @@ def _render_sell_complete(saved_holdings: list[dict]) -> None:
         name = resolve_stock_name(code) or code
         cur_price = _current_price(code)
         confirm_key = f"confirm_sell_{code}"
-        price_key = f"confirm_sell_price_{code}"
 
         if st.session_state.get(confirm_key):
-            price = float(st.session_state.get(price_key, 0.0) or 0.0)
             st.warning(f"**{name}** ({code}) · {qty:g}주를 정말 삭제할까요? 되돌릴 수 없습니다.")
             cc1, cc2 = st.columns(2)
             if cc1.button("확인, 삭제합니다", key=f"sellconfirm_{code}", type="primary",
                           use_container_width=True):
-                if price > 0:
-                    trades = load_trades()
-                    today = dt.date.today().isoformat()
-                    added = []
-                    opening = opening_buy_for_sell(trades, load_holdings(), code, qty, today)
-                    if opening:
-                        added.append(opening)  # 기록에 매수 이력이 없으면 매입단가로 기초 매수를 함께 남긴다
-                    added.append({"날짜": today, "종목코드": code, "구분": SELL, "수량": qty,
-                                  "단가": price, "수수료세금": 0.0})
-                    try:
-                        realized_pnl(trades + added)
-                    except JournalError as e:
-                        st.error(str(e))
-                        st.stop()
-                    save_trades(trades + added)
                 remaining = [x for x in load_holdings()
                              if str(x.get("종목코드", "")).strip().zfill(6) != code]
                 save_holdings(remaining)
                 st.session_state.pop(confirm_key, None)
-                st.session_state.pop(price_key, None)
-                st.success(f"{name}을(를) 보유종목에서 삭제했습니다." + (" 매도 기록도 남겼습니다." if price > 0 else ""))
+                st.success(f"{name}을(를) 보유종목에서 삭제했습니다.")
                 st.rerun()
             if cc2.button("취소", key=f"sellcancel_{code}", use_container_width=True):
                 st.session_state.pop(confirm_key, None)
-                st.session_state.pop(price_key, None)
                 st.rerun()
             continue
 
-        c1, c2, c3 = st.columns([2.2, 1.6, 1.4])
+        c1, c3 = st.columns([3.8, 1.4])
         price_line = f"매입 {cost:,.0f}원"
         if cur_price is not None:
             pnl_pct = cur_price / cost - 1 if cost > 0 else None
@@ -232,13 +209,8 @@ def _render_sell_complete(saved_holdings: list[dict]) -> None:
         else:
             price_line += " · 현재가 조회 실패"
         c1.markdown(f"**{name}** ({code}) · {qty:g}주 · {price_line}")
-        price = c2.number_input("매도가(원)", min_value=0.0, step=100.0, format="%g",
-                                value=cur_price if cur_price is not None else 0.0,
-                                key=f"sellpx_{code}", label_visibility="collapsed",
-                                help="체결된 매도 단가. 기본값은 현재가이며, 실제 체결가로 바꾸세요. 0이면 기록 없이 삭제만 합니다.")
         if c3.button("매도 완료(삭제)", key=f"sellbtn_{code}", use_container_width=True):
             st.session_state[confirm_key] = True
-            st.session_state[price_key] = price
             st.rerun()
 
 
