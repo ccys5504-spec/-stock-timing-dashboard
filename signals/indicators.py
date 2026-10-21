@@ -131,6 +131,9 @@ def _rsi(close: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
     return rsi.fillna(50)
 
 
+compute_rsi = _rsi  # 다른 모듈(시황 요약 등)이 쓰는 공개 이름
+
+
 def add_indicators(
     df: pd.DataFrame,
     ma_short: int = MA_SHORT,
