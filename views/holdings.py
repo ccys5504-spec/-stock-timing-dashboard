@@ -6,6 +6,9 @@
 """
 from __future__ import annotations
 
+import datetime as dt
+import math
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -13,6 +16,7 @@ import streamlit as st
 from backtest.engine import buy_and_hold_return_pct, run_backtest
 from core import Settings, load_data, prepare
 from data.fetch import load_holdings, resolve_stock_name, save_holdings
+from strategy.exit_rules import DEFAULT_RULE, evaluate_holding
 from views.order_link import render_order_link
 
 
@@ -29,16 +33,15 @@ def render(years: int, settings: Settings) -> None:
     )
 
     holdings = load_holdings()
-    holdings_df = pd.DataFrame(holdings) if holdings else pd.DataFrame(
-        columns=["종목코드", "수량", "매입단가"]
-    )
-    for col in ["종목코드", "수량", "매입단가"]:
+    editor_cols = ["종목코드", "수량", "매입단가", "매수일"]
+    holdings_df = pd.DataFrame(holdings) if holdings else pd.DataFrame(columns=editor_cols)
+    for col in editor_cols:
         if col not in holdings_df.columns:
             holdings_df[col] = pd.Series(dtype="object")
 
     st.subheader("보유종목 입력")
     edited_df = st.data_editor(
-        holdings_df[["종목코드", "수량", "매입단가"]],
+        holdings_df[editor_cols],
         num_rows="dynamic",
         use_container_width=True,
         key="holdings_editor",
@@ -46,13 +49,16 @@ def render(years: int, settings: Settings) -> None:
             "종목코드": st.column_config.TextColumn("종목코드", help="6자리 종목코드, 예: 000660", width="small"),
             "수량": st.column_config.NumberColumn("수량(주)", min_value=0, step=1),
             "매입단가": st.column_config.NumberColumn("매입단가(원)", min_value=0, step=100),
+            "매수일": st.column_config.TextColumn(
+                "매수일(선택)", width="small",
+                help="YYYY-MM-DD. 입력하면 '매도 규칙 점검'이 매수 이후의 고점을 정확히 계산합니다(비우면 오늘 봉만 봅니다)."),
         },
     )
 
     if st.button("💾 저장", type="primary"):
         clean = edited_df.dropna(subset=["종목코드"])
         clean = clean[clean["종목코드"].astype(str).str.strip() != ""]
-        save_holdings(clean.to_dict("records"))
+        save_holdings(_clean_records(clean))
         st.success("저장했습니다.")
         st.rerun()
 
@@ -110,6 +116,14 @@ def render(years: int, settings: Settings) -> None:
             if settings.stop_loss_pct is not None and pnl_pct <= -settings.stop_loss_pct:
                 stoploss_alerts.append(f"{name} ({pnl_pct:+.1%})")
 
+    rule_rows = _exit_rule_rows(saved_holdings)
+    rule_alerts = [r for r in rule_rows if r.get("발동")]
+    if rule_alerts:
+        st.error(
+            "🚨 **매도 규칙에 닿은 종목**: " + ", ".join(
+                f"{r['종목명']}({r['규칙']} 도달, 일봉 기준 {r['발동일']})" for r in rule_alerts)
+            + " — 매도 여부는 직접 판단·주문하세요(이 앱은 주문하지 않습니다)."
+        )
     if sell_alerts:
         st.warning(f"🔔 보유 중인 종목 중 **매도 신호**가 뜬 종목: {', '.join(sell_alerts)}")
     if stoploss_alerts:
@@ -148,10 +162,79 @@ def render(years: int, settings: Settings) -> None:
         "⚠️ 여기 표시되는 신호는 사이드바에 설정된 임계값/거래량 필터/손절 기준을 그대로 "
         "적용한 기계적 계산 결과이며, 투자 자문이 아닙니다."
     )
+    _render_exit_rule_table(rule_rows)
     render_order_link()  # 매도/추가매수를 하려면 여기서 키움 WTS로 이동
 
     st.divider()
     _render_strategy_comparison(saved_holdings, years, settings)
+
+
+def _clean_records(df: pd.DataFrame) -> list[dict]:
+    """편집표를 저장용 기록으로 바꾼다. 비어 있는 매수일(NaN)은 키를 아예 빼서 JSON에 NaN이 들어가지 않게 한다."""
+    records = []
+    for rec in df.to_dict("records"):
+        out = {k: v for k, v in rec.items() if k != "매수일"}
+        date = rec.get("매수일")
+        if isinstance(date, str) and date.strip():
+            try:
+                out["매수일"] = pd.Timestamp(date.strip()).date().isoformat()
+            except (ValueError, TypeError):
+                pass  # 날짜로 읽을 수 없으면 저장하지 않는다(나중에 다시 입력)
+        records.append(out)
+    return records
+
+
+def _exit_rule_rows(saved_holdings: list[dict]) -> list[dict]:
+    """보유종목마다 사용자 매도 규칙(손절 -3%, +5/+10/+20% 이익 보호선)을 일봉으로 점검한다."""
+    rows = []
+    for h in saved_holdings:
+        code = str(h.get("종목코드", "")).strip().zfill(6)
+        buy_price = float(h.get("매입단가") or 0)
+        if not code or buy_price <= 0:
+            continue
+        name = resolve_stock_name(code) or code
+        entry = h.get("매수일") or None
+        try:
+            years = 1
+            if entry:
+                years = min(10, max(1, math.ceil((dt.date.today() - pd.Timestamp(entry).date()).days / 365) + 1))
+            res = evaluate_holding(load_data(code, years), buy_price, entry, DEFAULT_RULE)
+        except Exception as e:  # noqa: BLE001 — 한 종목 실패가 화면 전체를 막지 않게
+            rows.append({"종목명": name, "오류": f"{type(e).__name__}: {e}"})
+            continue
+        rows.append({
+            "종목명": name, "매입가": buy_price, "현재가": res["last_price"], "수익률": res["last_return"],
+            "고점수익률": res["peak_return"], "매도선가": res["floor_price"], "매도선": res["floor_return"],
+            "발동": res["triggered"], "규칙": res["label"],
+            "발동일": res["exit_date"].date().isoformat() if res["exit_date"] is not None else "",
+            "정확": res["precise"],
+        })
+    return rows
+
+
+def _render_exit_rule_table(rule_rows: list[dict]) -> None:
+    st.subheader("📏 매도 규칙 점검")
+    st.caption(
+        "내가 정한 규칙: **매입가 대비 -3%에 닿으면 매도**, 고점 수익률이 **+5% / +10% / +20%**를 넘으면 그 구간의 "
+        "가격이 새 매도선(예: +12%까지 올랐다가 +10%로 내려오면 매도). 한 번 올라간 매도선은 내려가지 않습니다. "
+        "일봉으로 확인하는 값이라 장중 실시간이 아니고, **알림일 뿐 자동으로 주문하지 않습니다.**"
+    )
+    shown = [r for r in rule_rows if "오류" not in r]
+    for r in rule_rows:
+        if "오류" in r:
+            st.warning(f"{r['종목명']}: 규칙을 점검하지 못했습니다({r['오류']}).")
+    if not shown:
+        return
+    table = pd.DataFrame([{
+        "종목명": r["종목명"], "매입가": f"{r['매입가']:,.0f}", "현재가": f"{r['현재가']:,.0f}",
+        "수익률": f"{r['수익률']:+.1%}", "고점 수익률": f"{r['고점수익률']:+.1%}",
+        "현재 매도선": f"{r['매도선가']:,.0f} ({r['매도선']:+.0%})",
+        "상태": (f"🚨 {r['규칙']} 도달 ({r['발동일']})" if r["발동"] else f"유지 — {r['규칙']}"),
+        "계산 범위": "매수일 이후" if r["정확"] else "오늘 봉만(매수일 미입력)",
+    } for r in shown])
+    st.dataframe(table, use_container_width=True, hide_index=True)
+    if any(not r["정확"] for r in shown):
+        st.caption("💡 매수일을 입력하면 매수 이후의 고점을 정확히 반영합니다. 비워두면 이익 구간 매도선이 실제보다 낮게 나올 수 있습니다.")
 
 
 def _current_price(code: str) -> float | None:

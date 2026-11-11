@@ -64,3 +64,55 @@ def test_cancel_does_not_delete(store):
     assert not at.exception
     assert len(store.holdings) == 2
     assert at.button(key="sellbtn_005930")  # 원래 버튼 행으로 돌아온다
+
+
+# ---- 매도 규칙 점검(손절 -3%, +5/+10/+20% 이익 보호선) ---------------------------------------
+
+import numpy as np
+import pandas as pd
+
+
+def _bars(rows, start):
+    idx = pd.bdate_range(start, periods=len(rows))
+    return pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx)
+
+
+def test_clean_records_drops_empty_dates_and_normalises_valid_ones():
+    df = pd.DataFrame([
+        {"종목코드": "005930", "수량": 10, "매입단가": 70000, "매수일": np.nan},
+        {"종목코드": "000660", "수량": 2, "매입단가": 200000, "매수일": "2026-3-5"},
+        {"종목코드": "035420", "수량": 1, "매입단가": 100000, "매수일": "엉터리"},
+        {"종목코드": "051910", "수량": 1, "매입단가": 100000, "매수일": "  "},
+    ])
+    recs = holdings_view._clean_records(df)
+    assert "매수일" not in recs[0] and "매수일" not in recs[2] and "매수일" not in recs[3]
+    assert recs[1]["매수일"] == "2026-03-05"
+    import json
+    json.dumps(recs, allow_nan=False)  # NaN이 섞여 있으면 여기서 실패한다
+
+
+def test_exit_rule_rows_flag_trigger_and_use_purchase_date(monkeypatch):
+    # 005930: 매입 100 → +12%까지 올랐다가 +9%로 되돌림(매도선 +10% 이탈) / 000660: 매입 100, 조용히 보합
+    data = {
+        "005930": _bars([(100, 101, 99, 100, 1), (100, 112, 100, 111, 1), (111, 111, 109, 110, 1)], "2026-02-02"),
+        "000660": _bars([(100, 102, 99, 101, 1), (101, 103, 99, 100, 1), (100, 102, 99, 101, 1)], "2026-02-02"),
+    }
+    monkeypatch.setattr(holdings_view, "load_data", lambda code, years: data[code])
+    monkeypatch.setattr(holdings_view, "resolve_stock_name", lambda code: f"종목{code}")
+    rows = holdings_view._exit_rule_rows([
+        {"종목코드": "005930", "수량": 1, "매입단가": 100, "매수일": "2026-02-02"},
+        {"종목코드": "000660", "수량": 1, "매입단가": 100},  # 매수일 없음
+    ])
+    hit, quiet = rows
+    assert hit["발동"] and "이익 보호 +10%" in hit["규칙"] and hit["발동일"] == "2026-02-04" and hit["정확"]
+    assert not quiet["발동"] and quiet["정확"] is False
+
+
+def test_exit_rule_rows_isolate_failures(monkeypatch):
+    def boom(code, years):
+        raise ConnectionError("시세 없음")
+
+    monkeypatch.setattr(holdings_view, "load_data", boom)
+    monkeypatch.setattr(holdings_view, "resolve_stock_name", lambda code: f"종목{code}")
+    rows = holdings_view._exit_rule_rows([{"종목코드": "005930", "수량": 1, "매입단가": 100}])
+    assert "ConnectionError" in rows[0]["오류"]
